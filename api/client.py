@@ -351,3 +351,4 @@ class AnimeDekhoAPI:
 
 # Singleton
 api = AnimeDekhoAPI()
+api_client = api

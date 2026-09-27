@@ -13,6 +13,7 @@ from bot.telegram import Client, enums
 from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from bot.database import Database
+from bot.emojis import get_emoji
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ async def _download_poster(url: str) -> str | None:
     except Exception as e:
         log.warning("Poster download error: %s", e)
         return None
+
 
 CAPTION_LIMIT = 1024
 
@@ -90,6 +92,7 @@ class LibraryManager:
         message in the main channel.
 
         One message per series — always updated, never duplicated.
+        Sends a reply notification on new episodes (Issue #12).
         """
         if not self.channel:
             return
@@ -99,6 +102,81 @@ class LibraryManager:
                 series_slug, series_title, quality, episode_key,
                 file_id, file_unique_id, poster_url, is_movie,
             )
+
+    async def _send_episode_update_notification(
+        self,
+        target_message_id: int,
+        series_title: str,
+        series_slug: str,
+        episode_key: str,
+        quality: str = "",
+    ):
+        """
+        Send reply notification to existing library post on new episode (Issue #12):
+        • S2 | Episode 04 | #Added ✓
+        Start The Bot And Get Linke Here
+        (No inline buttons, text hyperlink only).
+        Also posts to ongoing_channel if configured.
+        """
+        try:
+            check_emoji = get_emoji("check", "✓")
+
+            m = re.search(r"S(\d+)E(\d+)", episode_key, re.IGNORECASE)
+            if m:
+                s_part = f"S{int(m.group(1))}"
+                e_part = f"Episode {int(m.group(2)):02d}"
+            else:
+                m_ep = re.search(r"E(?:pisode)?[\s_-]*(\d+)", episode_key, re.IGNORECASE)
+                if m_ep:
+                    s_part = "S1"
+                    e_part = f"Episode {int(m_ep.group(1)):02d}"
+                else:
+                    s_part = "S1"
+                    e_part = episode_key
+
+            q_param = quality or "720p"
+            request_link = f"https://t.me/{self.bot_username}?start=get_{series_slug}_{q_param}_{episode_key}"
+
+            reply_text = (
+                f"<b>{series_title}</b>\n"
+                f"<b>──────────────────────</b>\n\n"
+                f"<blockquote>• {s_part} | {e_part} | #Added {check_emoji}</blockquote>\n\n"
+                f'<a href="{request_link}">Start The Bot And Get Linke Here</a>'
+            )
+
+            # Send as reply in main channel without any inline buttons
+            if target_message_id and self.channel:
+                try:
+                    await self.client.send_message(
+                        chat_id=self.channel,
+                        text=reply_text,
+                        reply_to_message_id=target_message_id,
+                        parse_mode=enums.ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    )
+                except Exception as e:
+                    log.warning("Failed sending episode reply notification: %s", e)
+
+            # Optional Ongoing Channel posting (Issue #12)
+            from config import Config
+            ongoing_ch = getattr(Config, "ONGOING_CHANNEL", None)
+            if not ongoing_ch and self.db:
+                ongoing_ch = await self.db.get_ongoing_channel()
+
+            if ongoing_ch:
+                try:
+                    await self.client.send_message(
+                        chat_id=ongoing_ch,
+                        text=reply_text,
+                        parse_mode=enums.ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    )
+                    log.info("Posted episode update to ongoing channel: %s", ongoing_ch)
+                except Exception as e:
+                    log.warning("Failed posting to ongoing channel %s: %s", ongoing_ch, e)
+
+        except Exception as e:
+            log.warning("Failed in _send_episode_update_notification: %s", e)
 
     async def _save_locked(
         self,
@@ -141,7 +219,7 @@ class LibraryManager:
         all_files = await cursor.to_list(length=None)
 
         # Build episode/quality map
-        episodes: dict[str, set[str]] = {}  # ep_key -> set of qualities
+        episodes: dict[str, set[str]] = {}
         all_qualities: set[str] = set()
         for f in all_files:
             ep = f["episode_key"]
@@ -153,33 +231,33 @@ class LibraryManager:
         sorted_eps = sorted(episodes.keys(), key=_ep_sort_key)
         sorted_qualities = _sort_qualities(all_qualities)
 
-        # Get channel mapping, album mode, and post style
-        mapping = await self.db.get_channel_mapping(series_slug)
+        # Get channel mapping (with movie parent anime routing), album mode, and post style
+        mapping = await self.db.get_channel_mapping(series_slug, is_movie=is_movie, title=series_title)
         album_mode = await self.db.get_config("album_mode", default="channel")
         post_style = await self.db.get_post_style()
 
-        # Build caption
+        # Build caption & buttons
         caption = self._format_album_caption(
             series_title, sorted_eps, sorted_qualities, is_movie, poster_url,
             channel_mapping=mapping, series_slug=series_slug, post_style=post_style,
         )
-
-        # Build buttons
         markup = self._build_album_buttons(
             series_slug, sorted_eps, sorted_qualities, is_movie, channel_mapping=mapping, album_mode=album_mode,
         )
 
         # Check if album message already exists for this series
         entry = await self.db.library.find_one({"series_slug": series_slug, "type": "album"})
+        target_msg_id = None
 
         if entry and entry.get("message_id"):
             msg_id = entry["message_id"]
+            target_msg_id = msg_id
             if not entry.get("has_poster") and poster_url:
-                # Upgrade text-only album to photo album by deleting old text message
                 try:
                     await self.client.delete_messages(self.channel, msg_id)
                 except Exception:
                     pass
+                entry = None
             else:
                 try:
                     if entry.get("has_poster"):
@@ -212,10 +290,19 @@ class LibraryManager:
                     )
                     log.info("Updated album for %s: %d episodes, qualities: %s",
                              series_slug, len(sorted_eps), sorted_qualities)
+
+                    # Send reply update notification for new episode
+                    if episode_key and not is_movie:
+                        await self._send_episode_update_notification(
+                            target_message_id=msg_id,
+                            series_title=series_title,
+                            series_slug=series_slug,
+                            episode_key=episode_key,
+                            quality=quality,
+                        )
                     return
                 except Exception as e:
                     log.warning("Failed to update album message %d, recreating: %s", msg_id, e)
-                    # Delete old message if possible
                     try:
                         await self.client.delete_messages(self.channel, msg_id)
                     except Exception:
@@ -264,8 +351,6 @@ class LibraryManager:
                     except Exception:
                         pass
             else:
-                if poster_url:
-                    log.warning("Poster URL exists but download failed: %s", poster_url[:100])
                 msg = await self.client.send_message(
                     chat_id=self.channel,
                     text=caption[:CAPTION_LIMIT],
@@ -273,6 +358,8 @@ class LibraryManager:
                     disable_web_page_preview=True,
                     reply_markup=markup,
                 )
+
+            target_msg_id = msg.id
 
             # Upsert album entry (one per series)
             await self.db.library.update_one(
@@ -291,8 +378,171 @@ class LibraryManager:
                 upsert=True,
             )
             log.info("Created album for %s: %d episodes", series_slug, len(sorted_eps))
+
+            # Send reply update notification for new episode
+            if target_msg_id and episode_key and not is_movie:
+                await self._send_episode_update_notification(
+                    target_message_id=target_msg_id,
+                    series_title=series_title,
+                    series_slug=series_slug,
+                    episode_key=episode_key,
+                    quality=quality,
+                )
         except Exception as e:
             log.error("Failed to create album message: %s", e)
+
+    async def update_album_for_series(
+        self,
+        series_slug: str,
+        series_title: str,
+        poster_url: str | None = None,
+        is_movie: bool = False,
+        new_episode_key: str | None = None,
+        quality: str | None = None,
+    ):
+        """
+        Refresh or create the single album post for a series in the main channel,
+        reflecting all current files and sending update notification if an episode is new.
+        Addresses Issue #12.
+        """
+        if not self.channel:
+            return
+
+        async with _get_lock(series_slug):
+            cursor = self.db.files.find({"series_slug": series_slug})
+            all_files = await cursor.to_list(length=None)
+
+            episodes: dict[str, set[str]] = {}
+            all_qualities: set[str] = set()
+            for f in all_files:
+                ep = f.get("episode_key", "")
+                q = f.get("quality", "")
+                if ep and q:
+                    episodes.setdefault(ep, set()).add(q)
+                    all_qualities.add(q)
+
+            sorted_eps = sorted(episodes.keys(), key=_ep_sort_key)
+            sorted_qualities = _sort_qualities(all_qualities)
+
+            from utils.anilist import resolve_best_poster
+            poster_url = await resolve_best_poster(series_title, poster_url, is_movie=is_movie)
+
+            mapping = await self.db.get_channel_mapping(series_slug, is_movie=is_movie, title=series_title)
+            album_mode = await self.db.get_config("album_mode", default="channel")
+            post_style = await self.db.get_post_style()
+
+            caption = self._format_album_caption(
+                series_title, sorted_eps, sorted_qualities, is_movie, poster_url,
+                channel_mapping=mapping, series_slug=series_slug, post_style=post_style,
+            )
+            markup = self._build_album_buttons(
+                series_slug, sorted_eps, sorted_qualities, is_movie, channel_mapping=mapping, album_mode=album_mode,
+            )
+
+            now = datetime.now(timezone.utc).isoformat()
+            entry = await self.db.library.find_one({"series_slug": series_slug, "type": "album"})
+            target_msg_id = None
+
+            if entry and entry.get("message_id"):
+                msg_id = entry["message_id"]
+                target_msg_id = msg_id
+                try:
+                    if entry.get("has_poster"):
+                        await self.client.edit_message_caption(
+                            chat_id=self.channel,
+                            message_id=msg_id,
+                            caption=caption[:CAPTION_LIMIT],
+                            parse_mode=enums.ParseMode.HTML,
+                            reply_markup=markup,
+                        )
+                    else:
+                        await self.client.edit_message_text(
+                            chat_id=self.channel,
+                            message_id=msg_id,
+                            text=caption[:CAPTION_LIMIT],
+                            parse_mode=enums.ParseMode.HTML,
+                            disable_web_page_preview=True,
+                            reply_markup=markup,
+                        )
+                    await self.db.library.update_one(
+                        {"_id": entry["_id"]},
+                        {"$set": {
+                            "series_title": series_title,
+                            "episode_count": len(sorted_eps),
+                            "qualities": sorted_qualities,
+                            "updated_at": now,
+                            "poster_url": poster_url or entry.get("poster_url"),
+                        }},
+                    )
+                except Exception as e:
+                    log.warning("Failed to edit existing album %d: %s", msg_id, e)
+            else:
+                has_poster = False
+                poster_path = None
+                if poster_url:
+                    poster_path = await _download_poster(poster_url)
+                if not poster_path:
+                    from config import Config
+                    def_thumb = (
+                        getattr(Config, "DEFAULT_MOVIE_THUMB", None)
+                        if is_movie
+                        else getattr(Config, "DEFAULT_ANIME_THUMB", None)
+                    )
+                    if def_thumb:
+                        poster_path = await _download_poster(def_thumb)
+
+                try:
+                    if poster_path:
+                        try:
+                            msg = await self.client.send_photo(
+                                chat_id=self.channel,
+                                photo=poster_path,
+                                caption=caption[:CAPTION_LIMIT],
+                                parse_mode=enums.ParseMode.HTML,
+                                reply_markup=markup,
+                            )
+                            has_poster = True
+                        finally:
+                            try:
+                                os.remove(poster_path)
+                            except Exception:
+                                pass
+                    else:
+                        msg = await self.client.send_message(
+                            chat_id=self.channel,
+                            text=caption[:CAPTION_LIMIT],
+                            parse_mode=enums.ParseMode.HTML,
+                            disable_web_page_preview=True,
+                            reply_markup=markup,
+                        )
+
+                    target_msg_id = msg.id
+                    await self.db.library.update_one(
+                        {"series_slug": series_slug, "type": "album"},
+                        {"$set": {
+                            "series_slug": series_slug,
+                            "series_title": series_title,
+                            "type": "album",
+                            "message_id": msg.id,
+                            "has_poster": has_poster,
+                            "poster_url": poster_url,
+                            "episode_count": len(sorted_eps),
+                            "qualities": sorted_qualities,
+                            "updated_at": now,
+                        }},
+                        upsert=True,
+                    )
+                except Exception as e:
+                    log.error("Failed creating album in update_album_for_series: %s", e)
+
+            if target_msg_id and new_episode_key and not is_movie:
+                await self._send_episode_update_notification(
+                    target_message_id=target_msg_id,
+                    series_title=series_title,
+                    series_slug=series_slug,
+                    episode_key=new_episode_key,
+                    quality=quality or (sorted_qualities[0] if sorted_qualities else "720p"),
+                )
 
     def _format_album_caption(
         self,
@@ -307,35 +557,78 @@ class LibraryManager:
     ) -> str:
         import html as htmlmod
         title_esc = htmlmod.escape(title)
-        audio = "Multi Audio (Japanese, English & Hindi)"
-        quality_str = " | ".join(qualities)
+        quality_str = " | ".join(qualities) if qualities else "480p | 720p | 1080p"
 
         slug = series_slug or (channel_mapping.get("series_slug", "") if channel_mapping else "")
-        channel_line = ""
-        join_deep = ""
-        if channel_mapping and slug:
-            join_deep = f"https://t.me/{self.bot_username}?start=join_{slug}"
-            channel_line = f"➥ 📢 Cʜᴀɴɴᴇʟ:- <a href='{join_deep}'>Join Series Channel</a>\n"
+        join_deep = f"https://t.me/{self.bot_username}?start=join_{slug}" if slug else ""
+
+        if is_movie:
+            # Issue #12 Point 10: Main Library Movie Post with Telegram Premium Custom Emojis
+            star_emoji = get_emoji("star", "🌟")
+            movie_emoji = get_emoji("movie", "🏷")
+            audio_emoji = get_emoji("audio", "🔊")
+            qual_emoji = get_emoji("quality", "📷")
+            genres_emoji = get_emoji("genres", "🎭")
+            chan_emoji = get_emoji("channel", "➽")
+            arrow_emoji = get_emoji("arrow", "👉")
+
+            rating = "8.1"
+            genres_str = "#Action, #Drama, #Supernatural"
+            audio_str = "Multi Audio [Hindi, Tamil, Telugu, English, Japanese]"
+            channel_handle = f"@{self.bot_username}"
+
+            try:
+                from utils.anilist import _meta_cache
+                cached_meta = _meta_cache.get(title) or _meta_cache.get(series_slug)
+                if cached_meta:
+                    if cached_meta.get("averageScore"):
+                        rating = f"{cached_meta['averageScore'] / 10.0:.1f}"
+                    if cached_meta.get("genres"):
+                        genres_str = ", ".join(f"#{g.replace(' ', '')}" for g in cached_meta["genres"][:4])
+            except Exception:
+                pass
+
+            if channel_mapping and channel_mapping.get("invite_link"):
+                channel_handle = channel_mapping.get("invite_link")
+            elif self.channel:
+                from config import Config
+                main_link = getattr(Config, "MAIN_CHANNEL_LINK", "")
+                if main_link:
+                    channel_handle = main_link
+
+            quality_display = ", ".join(qualities) if qualities else "480p, 720p, 1080p, 4K"
+
+            caption = (
+                f"<b>‣ {title_esc} #WEB-DL {arrow_emoji}</b>\n\n"
+                f"<blockquote><b>╭───────────────────</b>\n"
+                f"<b>├ {star_emoji} Ratings - {rating} IMDB</b>\n"
+                f"<b>├ {movie_emoji} Movie - 01 | Movie</b>\n"
+                f"<b>├ {audio_emoji} Audio - {audio_str} | #Official</b>\n"
+                f"<b>├ {qual_emoji} Quality - {quality_display}</b>\n"
+                f"<b>├ {genres_emoji} Genres: {genres_str}</b>\n"
+                f"<b>╰───────────────────</b></blockquote>\n\n"
+                f"<b>{chan_emoji} Cʜᴀɴɴᴇʟ : {channel_handle}</b>"
+            )
+            return caption
 
         if post_style == "modern":
-            ep_type = "Movie" if is_movie else "Series"
+            star_emoji = get_emoji("star", "🌀")
             season_str = "01"
-            if not is_movie:
-                for ep in episodes:
-                    m = re.match(r"S(\d+)E(\d+)", ep, re.IGNORECASE)
-                    if m:
-                        season_str = f"{int(m.group(1)):02d}"
-                        break
+            for ep in episodes:
+                m = re.match(r"S(\d+)E(\d+)", ep, re.IGNORECASE)
+                if m:
+                    season_str = f"{int(m.group(1)):02d}"
+                    break
             genres_str = "Action, Drama, Fantasy, Anime"
-            duration_str = "~2 hrs" if is_movie else "24 min/ep"
+            duration_str = "24 min/ep"
             branding = f"@{self.bot_username}"
             channel_entry = f"📢 <b>Channel:</b> <a href='{join_deep}'>Join Series Channel</a>\n" if join_deep else ""
 
             return (
                 f"<b>{title_esc}</b> ❞\n\n"
-                f"┌ <b>TYPE:</b> {ep_type}\n"
+                f"┌ <b>TYPE:</b> Series\n"
                 f"📁 <b>DURATION:</b> {duration_str}\n"
-                f"🌀 <b>Rating:</b> 80%\n"
+                f"{star_emoji} <b>Rating:</b> 80%\n"
                 f"📋 <b>STATUS:</b> RELEASING\n"
                 f"⭕ <b>EPISODES:</b> {len(episodes)}\n"
                 f"❦ <b>SEASON:</b> {season_str}\n"
@@ -345,27 +638,29 @@ class LibraryManager:
                 f"➥ <b>{branding}</b>"
             )
 
-        if is_movie:
-            ep_info = "🎬 Movie"
-        else:
-            # Group episodes by season
-            seasons: dict[int, list[int]] = {}
-            for ep in episodes:
-                m = re.match(r"S(\d+)E(\d+)", ep, re.IGNORECASE)
-                if m:
-                    s, e = int(m.group(1)), int(m.group(2))
-                    seasons.setdefault(s, []).append(e)
+        channel_line = ""
+        if channel_mapping and join_deep:
+            channel_line = f"➥ 📢 Cʜᴀɴɴᴇʟ:- <a href='{join_deep}'>Join Series Channel</a>\n"
 
-            ep_lines = []
-            for s_num in sorted(seasons.keys()):
-                eps = sorted(seasons[s_num])
-                if len(eps) <= 3:
-                    ep_str = ", ".join(str(e) for e in eps)
-                else:
-                    ep_str = f"{eps[0]}-{eps[-1]}"
-                ep_lines.append(f"Season {s_num}: Episode {ep_str}")
+        # Group episodes by season
+        seasons: dict[int, list[int]] = {}
+        for ep in episodes:
+            m = re.match(r"S(\d+)E(\d+)", ep, re.IGNORECASE)
+            if m:
+                s, e = int(m.group(1)), int(m.group(2))
+                seasons.setdefault(s, []).append(e)
 
-            ep_info = "\n".join(f"➥ {line}" for line in ep_lines) if ep_lines else f"➥ {len(episodes)} episode(s)"
+        ep_lines = []
+        for s_num in sorted(seasons.keys()):
+            eps = sorted(seasons[s_num])
+            if len(eps) <= 3:
+                ep_str = ", ".join(str(e) for e in eps)
+            else:
+                ep_str = f"{eps[0]}-{eps[-1]}"
+            ep_lines.append(f"Season {s_num}: Episode {ep_str}")
+
+        ep_info = "\n".join(f"➥ {line}" for line in ep_lines) if ep_lines else f"➥ {len(episodes)} episode(s)"
+        audio = "Multi Audio (Japanese, English & Hindi)"
 
         caption = (
             f"◆ {title_esc} ◆ ❞\n"
@@ -389,36 +684,39 @@ class LibraryManager:
         channel_mapping: dict | None = None,
         album_mode: str = "channel",
     ) -> InlineKeyboardMarkup:
+        """
+        Build inline buttons for library album post.
+        Per Issue #12:
+        - Button 1: 'DOWNLOAD' -> leads to mapped anime series channel join/download flow.
+        - Button 2: 'DOWNLOAD NETWORK' -> opens configured network channel link.
+        """
         from bot.child_bots import child_bot_manager
+        from config import Config
         buttons = []
 
-        channel_btn = None
         slug_for_join = series_slug or (channel_mapping.get("series_slug", "") if channel_mapping else "")
-        if channel_mapping and slug_for_join:
-            join_deep = f"https://t.me/{self.bot_username}?start=join_{slug_for_join}"
-            channel_btn = InlineKeyboardButton(
-                "📢 Watch / Episodes Channel",
-                url=join_deep,
-            )
+        join_deep = f"https://t.me/{self.bot_username}?start=join_{slug_for_join or series_slug}"
+        download_btn = InlineKeyboardButton("DOWNLOAD", url=join_deep)
 
-        # If channel is mapped and album_mode is "channel" (channel-only)
-        if channel_btn and album_mode == "channel":
-            buttons.append([channel_btn])
-            first_q = qualities[0] if qualities else "1080p"
-            target_bot = self.bot_username
-            if child_bot_manager:
-                assigned = child_bot_manager.get_bot_for_quality(first_q)
-                if assigned:
-                    target_bot = assigned
-            if is_movie:
-                deep = f"https://t.me/{target_bot}?start=get_{series_slug}_{first_q}_movie"
-            else:
-                deep = f"https://t.me/{target_bot}?start=get_{series_slug}_{first_q}_all"
-            buttons.append([InlineKeyboardButton("📥 Download via Bot", url=deep)])
+        network_link = (
+            getattr(Config, "NETWORK_CHANNEL_LINK", "")
+            or getattr(Config, "MAIN_CHANNEL_LINK", "")
+            or join_deep
+        )
+        network_btn = InlineKeyboardButton("DOWNLOAD NETWORK", url=network_link)
+
+        # Mode: "channel" (default per Issue #12)
+        if album_mode == "channel":
+            buttons.append([download_btn])
+            buttons.append([network_btn])
             return InlineKeyboardMarkup(buttons)
 
+        # Mode: "both"
+        if album_mode == "both":
+            buttons.append([download_btn, network_btn])
+
+        # Direct download bot buttons
         if is_movie:
-            # One row per quality for movies
             row = []
             for q in qualities:
                 target_bot = self.bot_username
@@ -434,7 +732,6 @@ class LibraryManager:
             if row:
                 buttons.append(row)
         else:
-            # "Get All" button per quality
             for q in qualities:
                 target_bot = self.bot_username
                 if child_bot_manager:
@@ -444,8 +741,9 @@ class LibraryManager:
                 deep = f"https://t.me/{target_bot}?start=get_{series_slug}_{q}_all"
                 buttons.append([InlineKeyboardButton(f"📥 Get All Episodes [{q}]", url=deep)])
 
-        if channel_btn and album_mode == "both":
-            buttons.insert(0, [channel_btn])
+        if not buttons:
+            buttons.append([download_btn])
+            buttons.append([network_btn])
 
         return InlineKeyboardMarkup(buttons)
 
@@ -502,7 +800,8 @@ class LibraryManager:
 
                 sorted_eps = sorted(episodes.keys(), key=_ep_sort_key)
                 sorted_qualities = _sort_qualities(all_qualities)
-                mapping = await self.db.get_channel_mapping(slug)
+                is_movie = bool(a.get("is_movie", False) or "movie" in slug.lower())
+                mapping = await self.db.get_channel_mapping(slug, is_movie=is_movie, title=a.get("series_title", ""))
                 album_mode = await self.db.get_config("album_mode", default="channel")
                 post_style = await self.db.get_post_style()
 

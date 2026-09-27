@@ -84,6 +84,27 @@ class BotConfig:
         if getattr(Config, "AUTO_SEARCH", None) is not None
         else os.environ.get("AUTO_SEARCH", "on").lower() in ("on", "true", "1", "yes")
     )
+    ongoing_channel: int = field(
+        default_factory=lambda: getattr(Config, "ONGOING_CHANNEL", None) or int(os.environ.get("ONGOING_CHANNEL", "0"))
+    )
+    network_channel_link: str = field(
+        default_factory=lambda: getattr(Config, "NETWORK_CHANNEL_LINK", None)
+        or os.environ.get("NETWORK_CHANNEL_LINK", "https://t.me/animedekho")
+    )
+    enable_custom_emoji: bool = field(
+        default_factory=lambda: getattr(Config, "ENABLE_CUSTOM_EMOJI", None)
+        if getattr(Config, "ENABLE_CUSTOM_EMOJI", None) is not None
+        else os.environ.get("ENABLE_CUSTOM_EMOJI", "false").lower() in ("true", "1", "yes", "on")
+    )
+    thumb_template: str = field(
+        default_factory=lambda: getattr(Config, "THUMB_TEMPLATE", None)
+        or os.environ.get("THUMB_TEMPLATE", "modern").lower()
+    )
+    random_thumb_template: bool = field(
+        default_factory=lambda: getattr(Config, "RANDOM_THUMB_TEMPLATE", None)
+        if getattr(Config, "RANDOM_THUMB_TEMPLATE", None) is not None
+        else os.environ.get("RANDOM_THUMB_TEMPLATE", "off").lower() in ("on", "true", "1", "yes")
+    )
 
 
 @dataclass(frozen=True)

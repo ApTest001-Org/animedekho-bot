@@ -237,9 +237,15 @@ class EpisodeMonitorService:
                 from bot.library import library_manager
                 if library_manager:
                     try:
-                        await library_manager.update_album_for_series(series.slug, series.title, series.poster)
-                    except Exception:
-                        pass
+                        await library_manager.update_album_for_series(
+                            series.slug,
+                            series.title,
+                            series.poster,
+                            new_episode_key=ep_key,
+                            quality=best_quality.resolution,
+                        )
+                    except Exception as le:
+                        log.warning("Failed updating library album in monitor: %s", le)
 
                 # Log to owner/log channel
                 if bot_logger := getattr(settings, "bot_logger", None):

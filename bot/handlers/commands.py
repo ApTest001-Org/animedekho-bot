@@ -86,10 +86,13 @@ async def cmd_start(client: Client, message: Message):
             )
             return
 
+    from bot.emojis import get_emoji
+    tv_emoji = get_emoji("tv", "📺")
+
     welcome_text = (
         "🎌 <b>AnimeDekho Bot</b>\n\n"
         "Stream Hindi dubbed anime!\n\n"
-        "• 📺 <b>Series</b> — browse recent series\n"
+        f"• {tv_emoji} <b>Series</b> — browse recent series\n"
         "• 📂 <b>Genres</b> — filter by genre\n\n"
         "Just type any anime name to search!"
     )
@@ -467,8 +470,11 @@ async def _handle_file_request(client: Client, message: Message, param: str):
     # Send the file
     sent_msg = None
     try:
-        caption = f"📺 {htmlmod.escape(title)} [{quality}]"
-        if episode_key.lower() != "movie":
+        from bot.emojis import get_emoji
+        is_mov = bool(episode_key.lower() == "movie")
+        media_icon = get_emoji("movie", "🎬") if is_mov else get_emoji("tv", "📺")
+        caption = f"{media_icon} {htmlmod.escape(title)} [{quality}]"
+        if not is_mov:
             caption += f" — {episode_key}"
 
         try:

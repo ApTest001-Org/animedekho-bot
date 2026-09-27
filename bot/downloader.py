@@ -984,7 +984,10 @@ async def download_and_upload(
                     aud_tag = "Hindi Dub" if "hindi" in title.lower() or "hindi" in language.lower() else "Multi Audio"
                     ep_m = re.search(r"S(\d+)E(\d+)", filename, re.I)
                     ep_tag = f"Season {int(ep_m.group(1)):02d} • Episode {int(ep_m.group(2)):02d}" if ep_m else ""
+                    is_mov = bool("movie" in title.lower() or "movie" in filename.lower() or not ep_m)
                     auto_thumb_file = str(_TEMP_BASE / f"autothumb_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg")
+                    template_choice = await db.get_thumb_template() if db else None
+                    random_choice = await db.get_random_thumb_template() if db else False
                     gen_thumb = generate_auto_thumbnail(
                         title=title,
                         episode_info=ep_tag,
@@ -993,6 +996,8 @@ async def download_and_upload(
                         poster_path=thumb_path or "",
                         output_path=auto_thumb_file,
                         bot_username=bot_uname,
+                        template_name="random" if random_choice else template_choice,
+                        is_movie=is_mov,
                     )
                     if gen_thumb and os.path.exists(gen_thumb):
                         thumb_path = gen_thumb

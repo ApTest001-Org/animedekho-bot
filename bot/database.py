@@ -464,12 +464,59 @@ class Database:
 
     # ── Channel Mappings & Userbot Session ──────────────────────────
 
-    async def get_channel_mapping(self, series_slug: str, language: str | None = None) -> dict | None:
-        """Get mapped channel information for a series slug, with optional language-specific routing."""
+    async def get_channel_mapping(
+        self,
+        series_slug: str,
+        language: str | None = None,
+        is_movie: bool = False,
+        title: str = "",
+    ) -> dict | None:
+        """
+        Get mapped channel information for a series slug, with optional language-specific routing.
+        If is_movie is True or no direct mapping exists for a movie, intelligently resolves
+        to the parent anime series channel mapping (Issue #12).
+        """
         try:
             doc = await self.channel_mappings.find_one({"series_slug": series_slug})
+
+            # Intelligent Movie -> Existing Anime Series Channel Routing (Issue #12)
+            if not doc and (is_movie or "-movie" in series_slug or "-film" in series_slug or (title and "movie" in title.lower())):
+                import re
+                candidate_slugs = []
+                clean_s = series_slug
+                for sfx in ("-the-movie", "-movie", "-film", "-the-final-chapter", "-part-1", "-part-2", "-part-3", "-0"):
+                    clean_s = clean_s.replace(sfx, "")
+                clean_s = re.sub(r"-(?:mugen-train|shippuden-the-movie|super-hero|red|stampede|gold|resurrection|battle-of-gods|zero).*$", "", clean_s)
+                clean_s = clean_s.strip("-")
+                if clean_s and clean_s != series_slug:
+                    candidate_slugs.append(clean_s)
+
+                if title:
+                    from utils.anilist import clean_anime_title
+                    cands = clean_anime_title(title)
+                    for c in cands:
+                        slug_c = re.sub(r"[^\w\s-]", "", c.lower())
+                        slug_c = re.sub(r"[\s_]+", "-", slug_c).strip("-")
+                        if slug_c and slug_c not in candidate_slugs and slug_c != series_slug:
+                            candidate_slugs.append(slug_c)
+
+                for cand in candidate_slugs:
+                    doc = await self.channel_mappings.find_one({"series_slug": cand})
+                    if doc:
+                        log.info("Movie '%s' successfully routed to parent anime series channel '%s' (ID: %s)", series_slug, cand, doc.get("channel_id"))
+                        break
+                    # Fuzzy prefix match (e.g. ^demon-slayer)
+                    if "-" in cand:
+                        prefix = cand.split("-", 2)[:2]
+                        prefix_pattern = f"^{'-'.join(prefix)}"
+                        doc = await self.channel_mappings.find_one({"series_slug": {"$regex": prefix_pattern, "$options": "i"}})
+                        if doc:
+                            log.info("Movie '%s' routed to series channel via prefix '%s' (ID: %s)", series_slug, doc.get("series_slug"), doc.get("channel_id"))
+                            break
+
             if not doc:
                 return None
+
             if language:
                 lang_clean = language.strip().lower()
                 routes = doc.get("language_routes", {})
@@ -1008,6 +1055,57 @@ class Database:
     async def set_auto_search(self, enabled: bool):
         """Set direct anime name chat search trigger toggle."""
         await self.set_config("auto_search", "on" if enabled else "off")
+
+    async def get_enable_custom_emoji(self) -> bool:
+        """Check if Telegram Premium Custom Emojis are enabled."""
+        from config import Config
+        def_val = getattr(Config, "ENABLE_CUSTOM_EMOJI", False)
+        val = await self.get_config("enable_custom_emoji", default="on" if def_val else "off")
+        if isinstance(val, str):
+            return val.lower() in ("on", "true", "1", "yes")
+        return bool(val)
+
+    async def set_enable_custom_emoji(self, enabled: bool):
+        """Set Telegram Premium Custom Emojis toggle."""
+        await self.set_config("enable_custom_emoji", "on" if enabled else "off")
+
+    async def get_thumb_template(self) -> str:
+        """Get selected thumbnail template (modern, cinematic, movie_gold, neon_cyber, minimal, random)."""
+        from config import Config
+        def_val = getattr(Config, "THUMB_TEMPLATE", "modern")
+        val = await self.get_config("thumb_template", default=def_val)
+        return str(val).lower() if val else "modern"
+
+    async def set_thumb_template(self, template: str):
+        """Set selected thumbnail template."""
+        await self.set_config("thumb_template", template.strip().lower())
+
+    async def get_random_thumb_template(self) -> bool:
+        """Check if random thumbnail template selection mode is enabled."""
+        from config import Config
+        def_val = getattr(Config, "RANDOM_THUMB_TEMPLATE", False)
+        val = await self.get_config("random_thumb_template", default="on" if def_val else "off")
+        if isinstance(val, str):
+            return val.lower() in ("on", "true", "1", "yes")
+        return bool(val)
+
+    async def set_random_thumb_template(self, enabled: bool):
+        """Set random thumbnail template selection mode."""
+        await self.set_config("random_thumb_template", "on" if enabled else "off")
+
+    async def get_ongoing_channel(self) -> int | None:
+        """Get ongoing updates channel ID."""
+        from config import Config
+        def_val = getattr(Config, "ONGOING_CHANNEL", None)
+        val = await self.get_config("ongoing_channel", default=def_val)
+        try:
+            return int(val) if val else None
+        except (ValueError, TypeError):
+            return None
+
+    async def set_ongoing_channel(self, channel_id: int | None):
+        """Set ongoing updates channel ID."""
+        await self.set_config("ongoing_channel", channel_id)
 
 
     # ── Episode Post Style Configuration (Default: 'classic') ────────

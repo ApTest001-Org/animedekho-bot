@@ -3,26 +3,36 @@ Custom Emoji and Visual Styling Helpers.
 
 Supports Telegram Premium Custom Emojis (HTML <emoji id="...">)
 with automatic graceful fallback to standard Unicode emojis so free bots never break.
-Addresses Issue #8 (Point 3: Custom Emoji Support).
+Addresses Issue #8, Issue #10, and Issue #12.
 """
 
 from __future__ import annotations
 import os
+import logging
 from typing import Dict, Tuple
 
-# Mapping of semantic emoji names to (custom_emoji_id, unicode_fallback)
-# You can customize these emoji IDs using @PremiumemojiID_bot
+log = logging.getLogger(__name__)
+
+# Base registry of semantic names -> (default_custom_emoji_id, default_unicode)
+# Real Telegram Premium Custom Emoji IDs
 EMOJI_REGISTRY: Dict[str, Tuple[str, str]] = {
-    "fire": ("546546541234567890", "🔥"),
-    "star": ("546546541234567891", "⭐"),
+    "star": ("5368324170671202286", "⭐"),
+    "rating": ("5368324170671202286", "🌟"),
+    "movie": ("5443037926569253457", "🎬"),
+    "clapper": ("5443037926569253457", "🎬"),
+    "audio": ("5454157843477544062", "🔊"),
+    "quality": ("5427009714745328964", "📷"),
+    "genres": ("5472164874889714493", "🎭"),
+    "channel": ("5465223707248387434", "📢"),
+    "arrow": ("5465223707248387434", "➽"),
+    "check": ("5445284980972591637", "✓"),
+    "fire": ("5467657928606459048", "🔥"),
+    "download": ("5445284980972591637", "📥"),
+    "upload": ("5445284980972591637", "📤"),
     "sparkles": ("546546541234567892", "✨"),
     "rocket": ("546546541234567893", "🚀"),
-    "check": ("546546541234567894", "✅"),
     "cross": ("546546541234567895", "❌"),
     "tv": ("546546541234567896", "📺"),
-    "clapper": ("546546541234567897", "🎬"),
-    "download": ("546546541234567898", "📥"),
-    "upload": ("546546541234567899", "📤"),
     "search": ("546546541234567900", "🔍"),
     "gear": ("546546541234567901", "⚙️"),
     "timer": ("546546541234567902", "⏳"),
@@ -30,22 +40,53 @@ EMOJI_REGISTRY: Dict[str, Tuple[str, str]] = {
     "unlock": ("546546541234567904", "🔓"),
     "pin": ("546546541234567905", "📌"),
     "calendar": ("546546541234567906", "📅"),
-    "audio": ("546546541234567907", "🎙️"),
 }
 
 
-def get_emoji(name: str, fallback: str = "") -> str:
+def is_custom_emoji_enabled() -> bool:
+    """Check if custom emoji rendering is enabled in config or environment."""
+    try:
+        from config import Config
+        cfg_val = getattr(Config, "ENABLE_CUSTOM_EMOJI", None)
+        if cfg_val is not None:
+            return bool(cfg_val)
+    except Exception:
+        pass
+    return os.environ.get("ENABLE_CUSTOM_EMOJI", "false").lower() in ("true", "1", "yes", "on")
+
+
+def get_emoji(name: str, fallback: str = "", force_custom: bool | None = None) -> str:
     """
     Get formatted emoji. If custom emojis are enabled, outputs HTML <emoji id="...">
     otherwise returns standard unicode fallback.
+    Gracefully handles invalid IDs, missing configs, and never crashes.
     """
-    enable_custom = os.environ.get("ENABLE_CUSTOM_EMOJI", "false").lower() in ("true", "1", "yes")
+    try:
+        enable_custom = force_custom if force_custom is not None else is_custom_emoji_enabled()
+        name_clean = name.strip().lower()
 
-    entry = EMOJI_REGISTRY.get(name)
-    if not entry:
+        # Check user configured CUSTOM_EMOJIS from config.py first
+        configured_id = ""
+        try:
+            from config import Config
+            custom_map = getattr(Config, "CUSTOM_EMOJIS", {})
+            if isinstance(custom_map, dict):
+                configured_id = str(custom_map.get(name_clean, "")).strip()
+        except Exception:
+            pass
+
+        entry = EMOJI_REGISTRY.get(name_clean)
+        default_id, default_unicode = entry if entry else ("", fallback or "•")
+        emoji_id = configured_id or default_id
+        unicode_repr = fallback or default_unicode
+
+        # Validate emoji_id: must be non-empty digits
+        is_valid_id = bool(emoji_id and str(emoji_id).isdigit() and len(str(emoji_id)) >= 10)
+
+        if enable_custom and is_valid_id:
+            return f'<emoji id="{emoji_id}">{unicode_repr}</emoji>'
+
+        return unicode_repr
+    except Exception as e:
+        log.debug("Error getting emoji '%s': %s", name, e)
         return fallback or "•"
-
-    emoji_id, default_unicode = entry
-    if enable_custom and emoji_id:
-        return f'<emoji id="{emoji_id}">{fallback or default_unicode}</emoji>'
-    return fallback or default_unicode

@@ -174,6 +174,9 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
     auto_thumb = await db.get_auto_thumb() if db else True
     auto_sched = await db.get_auto_schedule_post() if db else False
     auto_search = await db.get_auto_search() if db else True
+    custom_emoji = await db.get_enable_custom_emoji() if db else False
+    thumb_template = await db.get_thumb_template() if db else "modern"
+    random_thumb = await db.get_random_thumb_template() if db else False
 
     from config.settings import settings
     ai_enabled = settings.ai.enabled if settings and settings.ai else True
@@ -184,6 +187,18 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
 
     def _style_badge(style: str) -> str:
         return "Modern 🎨" if style == "modern" else "Classic 📜"
+
+    def _template_badge(tmpl: str, rand: bool) -> str:
+        if rand:
+            return "Random 🎲"
+        names = {
+            "modern": "Modern 🎨",
+            "cinematic": "Cinema 🎬",
+            "movie_gold": "Gold 👑",
+            "neon_cyber": "Cyber ⚡",
+            "minimal": "Minimal 🪟",
+        }
+        return names.get(tmpl.lower(), tmpl.capitalize())
 
     def _dlt_badge(sec: int) -> str:
         if sec <= 0:
@@ -204,6 +219,8 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
         "Click the buttons below to toggle features and customize UI styles in real-time.\n\n"
         f"• 🔒 <b>FSub Timer Link:</b> <code>{_badge(fsub_mod)}</code> (2m Expire)\n"
         f"• ⏳ <b>File Auto-Delete:</b> <code>{_dlt_badge(dlt_time)}</code>\n"
+        f"• ⭐ <b>Custom Emoji:</b> <code>{_badge(custom_emoji)}</code> (Premium Emojis)\n"
+        f"• 🖼️ <b>Thumb Style:</b> <code>{_template_badge(thumb_template, random_thumb)}</code>\n"
         f"• 🎨 <b>Start Menu UI:</b> <code>{_style_badge(start_style)}</code>\n"
         f"• 📅 <b>Schedule UI:</b> <code>{_style_badge(sched_style)}</code>\n"
         f"• 📺 <b>Episode Post:</b> <code>{_style_badge(ep_style)}</code>\n"
@@ -217,6 +234,14 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
 
     markup = InlineKeyboardMarkup([
         [
+            InlineKeyboardButton(f"⭐ Custom Emoji: {_badge(custom_emoji)}", callback_data="set_toggle:custom_emoji"),
+            InlineKeyboardButton(f"🖼️ Style: {_template_badge(thumb_template, random_thumb)}", callback_data="set_toggle:thumb_template"),
+        ],
+        [
+            InlineKeyboardButton(f"🎲 Random Thumb: {_badge(random_thumb)}", callback_data="set_toggle:random_thumb"),
+            InlineKeyboardButton(f"🖼️ AutoThumb: {_badge(auto_thumb)}", callback_data="set_toggle:auto_thumb"),
+        ],
+        [
             InlineKeyboardButton(f"🔒 FSub: {_badge(fsub_mod)}", callback_data="set_toggle:fsub_mod"),
             InlineKeyboardButton(f"⏳ Delete: {_dlt_badge(dlt_time)}", callback_data="set_toggle:dlt_time"),
         ],
@@ -229,18 +254,15 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
             InlineKeyboardButton(f"🖼️ Post: {_style_badge(post_style)}", callback_data="set_toggle:post_style"),
         ],
         [
-            InlineKeyboardButton(f"🖼️ AutoThumb: {_badge(auto_thumb)}", callback_data="set_toggle:auto_thumb"),
+            InlineKeyboardButton(f"🔍 AutoSearch: {_badge(auto_search)}", callback_data="set_toggle:auto_search"),
             InlineKeyboardButton(f"⏰ 12 AM Post: {_badge(auto_sched)}", callback_data="set_toggle:auto_sched"),
         ],
         [
-            InlineKeyboardButton(f"🔍 AutoSearch: {_badge(auto_search)}", callback_data="set_toggle:auto_search"),
             InlineKeyboardButton(f"🤖 AI Agent: {_badge(ai_enabled)}", callback_data="set_toggle:ai_enabled"),
-        ],
-        [
-            InlineKeyboardButton("📖 Open /commands Guide", callback_data="cmd_cat:home"),
             InlineKeyboardButton("🔄 Refresh", callback_data="set_toggle:refresh"),
         ],
         [
+            InlineKeyboardButton("📖 Open /commands Guide", callback_data="cmd_cat:home"),
             InlineKeyboardButton("❌ Close Panel", callback_data="settings_action:close"),
         ],
     ])
@@ -327,6 +349,43 @@ async def settings_callback(client: Client, query: CallbackQuery):
         new_style = "classic" if cur == "modern" else "modern"
         await db.set_post_style(new_style)
         alert_msg = f"Channel Card Style set to: {new_style.capitalize()}"
+
+    elif data == "set_toggle:custom_emoji":
+        cur = await db.get_enable_custom_emoji()
+        new_val = not cur
+        await db.set_enable_custom_emoji(new_val)
+        try:
+            from config import Config
+            Config.ENABLE_CUSTOM_EMOJI = new_val
+        except Exception:
+            pass
+        alert_msg = f"Telegram Premium Custom Emojis: {'ENABLED' if new_val else 'DISABLED'}"
+
+    elif data == "set_toggle:thumb_template":
+        templates = ["modern", "cinematic", "movie_gold", "neon_cyber", "minimal"]
+        cur = await db.get_thumb_template()
+        cur_idx = templates.index(cur) if cur in templates else 0
+        new_template = templates[(cur_idx + 1) % len(templates)]
+        await db.set_thumb_template(new_template)
+        await db.set_random_thumb_template(False)
+        try:
+            from config import Config
+            Config.THUMB_TEMPLATE = new_template
+            Config.RANDOM_THUMB_TEMPLATE = False
+        except Exception:
+            pass
+        alert_msg = f"Thumbnail Style: {new_template.upper()}"
+
+    elif data == "set_toggle:random_thumb":
+        cur = await db.get_random_thumb_template()
+        new_val = not cur
+        await db.set_random_thumb_template(new_val)
+        try:
+            from config import Config
+            Config.RANDOM_THUMB_TEMPLATE = new_val
+        except Exception:
+            pass
+        alert_msg = f"Random Thumbnail Mode: {'ENABLED (Different template per upload)' if new_val else 'DISABLED'}"
 
     elif data == "set_toggle:auto_thumb":
         cur = await db.get_auto_thumb()

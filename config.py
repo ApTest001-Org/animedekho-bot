@@ -59,10 +59,16 @@ class Config:
     # Dedicated dump/storage channel ID (optional, 0 = disabled)
     DUMP_CHANNEL = int(os.environ.get("DUMP_CHANNEL", "0"))
 
+    # Optional Ongoing Channel for latest episode updates & notifications (0 = disabled)
+    ONGOING_CHANNEL = int(os.environ.get("ONGOING_CHANNEL", "0"))
+
     # Force Subscribe channel ID (defaults to MAIN_CHANNEL if unset)
     FSUB_CHANNEL = os.environ.get("FSUB_CHANNEL", None)
     if FSUB_CHANNEL and str(FSUB_CHANNEL).lstrip("-").isdigit():
         FSUB_CHANNEL = int(FSUB_CHANNEL)
+
+    # Main / Network Channel Link (used for DOWNLOAD NETWORK button)
+    NETWORK_CHANNEL_LINK = os.environ.get("NETWORK_CHANNEL_LINK", "https://t.me/animedekho")
 
     # ── Database (MongoDB) ────────────────────────────────────────────────
     # MongoDB connection URI (Atlas or local)
@@ -101,6 +107,27 @@ class Config:
     EP_STYLE = os.environ.get("EP_STYLE", "classic").lower()
     POST_STYLE = os.environ.get("POST_STYLE", "classic").lower()
 
+    # ── Telegram Premium Custom Emojis (Issue #10) ────────────────────────
+    # Enable rendering of Telegram Premium Custom Emojis (<emoji id="...">)
+    # Automatically falls back to standard Unicode emojis if false/unsupported
+    ENABLE_CUSTOM_EMOJI = os.environ.get("ENABLE_CUSTOM_EMOJI", "false").lower() in ("true", "1", "yes", "on")
+
+    # Configurable Custom Emoji IDs (customize using @PremiumemojiID_bot)
+    CUSTOM_EMOJIS = {
+        "star": os.environ.get("EMOJI_STAR", "5368324170671202286"),
+        "rating": os.environ.get("EMOJI_RATING", "5368324170671202286"),
+        "movie": os.environ.get("EMOJI_MOVIE", "5443037926569253457"),
+        "audio": os.environ.get("EMOJI_AUDIO", "5454157843477544062"),
+        "quality": os.environ.get("EMOJI_QUALITY", "5427009714745328964"),
+        "genres": os.environ.get("EMOJI_GENRES", "5472164874889714493"),
+        "channel": os.environ.get("EMOJI_CHANNEL", "5465223707248387434"),
+        "arrow": os.environ.get("EMOJI_ARROW", "5465223707248387434"),
+        "check": os.environ.get("EMOJI_CHECK", "5445284980972591637"),
+        "fire": os.environ.get("EMOJI_FIRE", "5467657928606459048"),
+        "download": os.environ.get("EMOJI_DOWNLOAD", "5445284980972591637"),
+        "upload": os.environ.get("EMOJI_UPLOAD", "5445284980972591637"),
+    }
+
     # ── Features & Security ───────────────────────────────────────────────
     # Auto Search: Automatically trigger search when typing anime name directly in chat
     # If "off", users must use /search <name> command (prevents chat clutter)
@@ -114,6 +141,13 @@ class Config:
 
     # Auto Thumbnail: Automatically generate branded 1280x720 HD thumbnails with title & badges
     AUTO_THUMB = os.environ.get("AUTO_THUMB", "on").lower() in ("on", "true", "1", "yes")
+
+    # Modular Thumbnail Template (Issue #11)
+    # Options: "modern", "cinematic", "movie_gold", "neon_cyber", "minimal", "random"
+    THUMB_TEMPLATE = os.environ.get("THUMB_TEMPLATE", "modern").lower()
+
+    # Random Thumbnail Mode: When True, chooses a different random template on every upload
+    RANDOM_THUMB_TEMPLATE = os.environ.get("RANDOM_THUMB_TEMPLATE", "off").lower() in ("on", "true", "1", "yes")
 
     # Auto Schedule Channel Post: Automatically post/update schedule card at 12:00 AM IST
     AUTO_SCHEDULE_POST = os.environ.get("AUTO_SCHEDULE_POST", "off").lower() in ("on", "true", "1", "yes")
