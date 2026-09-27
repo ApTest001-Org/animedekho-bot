@@ -1,167 +1,344 @@
 <div align="center">
 
-# 🌟 **ANIME DEKHO BOT** 🌟
+<img src="assets/banner.png" alt="AnimeDekho — Telegram Anime Streaming Engine" width="100%">
 
-<p align="center">
-  <img src="https://images.unsplash.com/photo-1576477330363-5460ff24818d?w=1280" 
-       alt="AnimeDekho Bot - Anime Streaming & Library Engine" 
-       style="max-width: 100%; border-radius: 20px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);"
-       width="1280">
+<br>
+
+<a id="top"></a>
+
+# 「 🍥 AnimeDekho Bot 」
+
+### *Next-Gen Anime Streaming · Archival · Channel Automation Engine*
+
+<p>
+  <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.10%20%E2%80%A2%203.11%20%E2%80%A2%203.12%20%E2%80%A2%203.14-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
+  <a href="https://github.com/jrodr254/animedekho-bot"><img src="https://img.shields.io/badge/WZGram-MTProto%202GB%20Engine-0088cc?style=for-the-badge&logo=telegram&logoColor=white" alt="WZGram"></a>
+  <a href="https://mongodb.com"><img src="https://img.shields.io/badge/MongoDB-Async%20Motor-47A248?style=for-the-badge&logo=mongodb&logoColor=white" alt="MongoDB"></a>
+  <a href="https://anilist.co"><img src="https://img.shields.io/badge/AniList-GraphQL%20Metadata-02A9FF?style=for-the-badge&logo=anilist&logoColor=white" alt="AniList"></a>
+  <a href="https://github.com/jrodr254/animedekho-bot/stargazers"><img src="https://img.shields.io/github/stars/jrodr254/animedekho-bot?style=for-the-badge&color=FF2EA6&labelColor=1a0533" alt="Stars"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-00E0FF?style=for-the-badge&labelColor=1a0533" alt="License"></a>
 </p>
 
-### ⚡ **Next-Gen Anime Streaming, Archival & Channel Automation Engine** ⚡
-
-<p align="center">
-  <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.14-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"/></a>
-  <a href="https://github.com/TgbotWorld/animedekho-bot"><img src="https://img.shields.io/badge/MTProto-WZGram%202GB%20Engine-0088cc?style=for-the-badge&logo=telegram&logoColor=white" alt="WZGram"/></a>
-  <a href="https://mongodb.com"><img src="https://img.shields.io/badge/Database-MongoDB%20Async-47A248?style=for-the-badge&logo=mongodb&logoColor=white" alt="MongoDB"/></a>
-  <a href="https://anilist.co"><img src="https://img.shields.io/badge/Metadata-AniList%20GraphQL-02A9FF?style=for-the-badge&logo=anilist&logoColor=white" alt="AniList"/></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-F59E0B?style=for-the-badge" alt="License"/></a>
-</p>
-
-<p align="center">
-  <a href="#-flagship-features">🔥 Features</a> • 
-  <a href="#-quick-commands">⚡ Commands</a> • 
-  <a href="#-configuration-guide">⚙️ Config</a> • 
-  <a href="#-vps-deployment">🚀 Deploy</a>
+<p>
+  <a href="#overview"><b>🌌 Overview</b></a> &nbsp;•&nbsp;
+  <a href="#features"><b>🔥 Features</b></a> &nbsp;•&nbsp;
+  <a href="#commands"><b>⚡ Commands</b></a> &nbsp;•&nbsp;
+  <a href="#architecture"><b>🧬 Architecture</b></a> &nbsp;•&nbsp;
+  <a href="#configuration"><b>⚙️ Config</b></a> &nbsp;•&nbsp;
+  <a href="#deployment"><b>🚀 Deploy</b></a>
 </p>
 
 </div>
 
----
+<img src="assets/divider.png" width="100%" alt="divider">
 
-## 🌌 What is AnimeDekho Bot?
+<a id="overview"></a>
 
-**AnimeDekho Bot** is a powerful automated Telegram engine that turns any anime channel into a professional streaming + archival platform.
+## 🌌 ᴏ ᴠ ᴇ ʀ ᴠ ɪ ᴇ ᴡ
 
-It fetches official AniList HD art, downloads multi-quality streams (480p → 4K), auto-generates stunning thumbnails, and maintains **single-post-per-anime** albums with zero duplicates.
+> **AnimeDekho** turns any Telegram channel into a fully automated **anime streaming + archival platform** — no manual work, no duplicate posts, no ugly cards.
 
----
+```diff
++ 🔎  Watches AnimeDekho for new episode & movie drops
++ 🖼️  Auto-generates cinematic 1280×720 branded thumbnails (5 styles)
++ 🎞️  Downloads multi-quality streams — 480p → 720p → 1080p → 4K
++ 📚  Maintains one beautiful master post per anime (updates in-place)
++ 🔔  Fans get notified in a tidy thread — channels stay clean
+```
 
-## 🔥 Flagship Features
+<img src="assets/divider.png" width="100%" alt="divider">
 
-### 🎨 Auto Thumbnail Studio (5 Premium Styles)
+<a id="features"></a>
 
-Automatically generates beautiful 1280x720 HD thumbnails. 5 stunning designs + random mode!
+## 🔥 ꜰ ʟ ᴀ ɢ s ʜ ɪ ᴘ ꜰ ᴇ ᴀ ᴛ ᴜ ʀ ᴇ s
 
-| Style          | Vibe                          | Perfect For                  |
-|----------------|-------------------------------|------------------------------|
-| `modern`       | High-contrast dark neon       | Weekly TV episodes           |
-| `cinematic`    | Indigo widescreen letterbox   | Movies & story arcs          |
-| `movie_gold`   | Luxury metallic gold frame    | OVAs & feature films         |
-| `neon_cyber`   | Electric cyan + hot pink      | Shonen, Sci-Fi, Action       |
-| `minimal`      | Clean frosted glass look      | Aesthetic channels           |
-| `random`       | Dynamic every upload          | Surprise factor              |
+<table>
+  <tr>
+    <td width="50%">
+      <h3>🎨 Auto Thumbnail Studio</h3>
+      <p>Five premium 1280×720 HD designs + chaos mode. Branded, professional, zero design work.</p>
+    </td>
+    <td width="50%">
+      <h3>📚 Smart Library Engine</h3>
+      <p>One master post per anime — updated in-place. Movies auto-route away from series rows.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <h3>🤖 Autonomous AI Agent</h3>
+      <p>Natural-language admin assistant — flip settings, search anime, run the bot by chat.</p>
+    </td>
+    <td width="50%">
+      <h3>👥 Worker Bot Swarm</h3>
+      <p>Attach unlimited child bots with per-bot quality tiers to serve files without limits.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <h3>🔒 Privacy-First Security</h3>
+      <p>2-minute expiring invite links, auto media self-destruct countdown, ban / unban control.</p>
+    </td>
+    <td width="50%">
+      <h3>⭐ Premium Emoji Support</h3>
+      <p>First-class Telegram Premium custom emoji rendering with elegant Unicode fallbacks.</p>
+    </td>
+  </tr>
+</table>
 
-### ⭐ Premium Telegram Emojis
+### 🎨 Thumbnail Templates
 
-Full support for Telegram Premium custom emojis + beautiful Unicode fallback.
+| Template      | Aesthetic                      | Made For                |
+|---------------|--------------------------------|-------------------------|
+| `modern`      | High-contrast dark neon        | Weekly TV episodes      |
+| `cinematic`   | Indigo widescreen letterbox    | Movies & story arcs     |
+| `movie_gold`  | Luxury metallic gold frame     | OVAs & feature films    |
+| `neon_cyber`  | Electric cyan × hot pink       | Shonen · Sci-Fi · Action|
+| `minimal`     | Clean frosted-glass look       | Aesthetic channels      |
+| `random`      | Fresh style on every upload    | Maximum surprise factor |
 
-### 📚 Smart Library Engine
+<img src="assets/divider.png" width="100%" alt="divider">
 
-- Single master post per anime (updates in-place)  
-- Auto movie → series routing  
-- New episode notification thread  
-- Channel navigation buttons + optional ongoing channel
+<a id="commands"></a>
 
-### 🔒 Advanced Security
+## ⚡ ᴄ ᴏ ᴍ ᴍ ᴀ ɴ ᴅ s
 
-- 2-minute expiring invite links  
-- Auto media delete with countdown  
-- Unlimited child worker bots  
-- Full privacy & rate-limit protection
+Minimal surface for users — full arsenal for admins. Tap <kbd>/commands</kbd> inside the bot for the interactive catalog.
 
----
-
-## ⚡ Quick Commands (Minimum)
-
-Only these 4 essential commands are shown by default. Tap **`/commands`** in the bot to open the full interactive guide.
-
-| Command       | Description                              |
-|---------------|------------------------------------------|
-| `/start`      | Main menu + welcome banner               |
-| `/search`     | Search anime across the entire database  |
-| `/commands`   | Open interactive command guide           |
-| `/settings`   | Real-time admin panel (admins only)      |
-
----
-
-## ⚡ Full Command List (Tap to Expand)
+| Command            | What it does                              |
+|--------------------|-------------------------------------------|
+| <kbd>/start</kbd>   | Main menu + welcome banner                |
+| <kbd>/search</kbd>  | Search anime across the entire database   |
+| <kbd>/schedule</kbd>| Upcoming episodes & release cards         |
+| <kbd>/commands</kbd>| Interactive visual command guide          |
+| <kbd>/settings</kbd>| Real-time admin control panel *(admins)*  |
 
 <details>
-<summary>🔽 Tap to view all 17 commands</summary>
-
+<summary><b>📂 &nbsp;Open the full command arsenal — 50+ commands</b></summary>
 <br>
 
-#### 👤 Public User Commands
-| Command          | Description                                      |
-|------------------|--------------------------------------------------|
-| `/start`         | Main menu + welcome banner                       |
-| `/search <title>`| Search across the entire AnimeDekho database     |
-| `/schedule`      | View 30-day upcoming dubbed anime releases       |
-| `/commands`      | Interactive visual catalog of all commands       |
-| `/help`          | Detailed bot usage manual                        |
+**👤 User Commands**
 
-#### 👑 Admin & Owner Commands
-| Command             | Description                                      |
-|---------------------|--------------------------------------------------|
-| `/settings`         | Visual control panel with real-time toggles      |
-| `/stats`            | Live VPS hardware telemetry                      |
-| `/health`           | Self-diagnostic check for bot + MongoDB           |
-| `/users`            | User analytics                                   |
-| `/broadcast <msg>`  | Broadcast message to all users                    |
-| `/autosearch on/off`| Toggle direct chat search trigger                 |
-| `/automonitor on/off`| Toggle automated episode watcher                 |
-| `/setthumb`         | Set custom upload thumbnail                      |
-| `/delthumb`         | Remove custom upload thumbnail                   |
-| `/mapchannel`       | Map specific anime uploads to a channel          |
-| `/addbot <token>`   | Add unlimited child worker bots                  |
-| `/login`            | Interactive MTProto userbot login wizard         |
-| `/ai <prompt>`      | Natural-language anime assistant                 |
+| Command       | Description                                  |
+|---------------|----------------------------------------------|
+| `/start`      | Main menu                                    |
+| `/search`     | Search anime & movies                        |
+| `/schedule`   | Anime airing schedule                        |
+| `/commands`   | Interactive command navigator                |
+| `/help`       | Usage manual                                 |
+| `/tutorial`   | Bot network guide & tutorials                |
+
+**🎛️ Admin Core**
+
+| Command           | Description                              |
+|-------------------|------------------------------------------|
+| `/settings`       | Visual control panel with live toggles   |
+| `/stats`          | VPS stats & performance card             |
+| `/health`         | System health & bot status               |
+| `/logs`           | Environment logs & export                |
+| `/errors`         | Recent download errors                   |
+| `/users`          | User analytics & registered count        |
+| `/adduser`        | Approve a user                           |
+| `/removeuser`     | Remove a user                            |
+
+**📡 Broadcast & Moderation**
+
+| Command       | Description                          |
+|---------------|--------------------------------------|
+| `/broadcast`  | Broadcast text to all users          |
+| `/pbroadcast` | Broadcast photo to all users         |
+| `/dbroadcast` | Broadcast file to all users          |
+| `/ban`        | Ban user from bot network            |
+| `/unban`      | Unban user                           |
+
+**📺 Channel, Library & Styling**
+
+| Command           | Description                                    |
+|-------------------|------------------------------------------------|
+| `/autochannel`    | Toggle auto channel creation                   |
+| `/createchannel`  | Create a channel for an anime                  |
+| `/channels`       | List mapped anime channels                     |
+| `/albummode`      | Configure album display mode                   |
+| `/refreshalbums`  | Refresh channel album buttons                  |
+| `/setchannellink` | Set channel invite link                        |
+| `/delete`         | Delete a series or file                        |
+| `/setdump`        | Configure dump storage channel                 |
+| `/poststyle`      | Toggle channel post style (classic/modern)     |
+| `/startstyle`     | Toggle /start UI style                         |
+| `/schedstyle`     | Toggle /schedule UI style                      |
+| `/epstyle`        | Toggle episode post style                      |
+| `/startpic`       | Set banner photo for /start modern UI          |
+| `/setthumb`       | Set custom upload thumbnail                    |
+| `/delthumb`       | Delete custom thumbnail                        |
+
+**🔐 ForceSub & Timers**
+
+| Command      | Description                          |
+|--------------|--------------------------------------|
+| `/fsub`      | Manage Force Subscribe channel       |
+| `/fsub_mod`  | Toggle 2-min timer FSub links        |
+| `/dlt_time`  | Configure file auto-delete timer     |
+
+**🤖 AI · 👥 Worker Bots · 🧑‍💻 Userbot**
+
+| Command          | Description                            |
+|------------------|----------------------------------------|
+| `/ai`            | Autonomous AI agent                    |
+| `/setai`         | Configure AI model, key & persona      |
+| `/addbot`        | Add a child worker bot                 |
+| `/delbot`        | Remove a child worker bot              |
+| `/bots`          | List child worker bots                 |
+| `/setbotquality` | Set child bot quality tier             |
+| `/login`         | Login userbot session wizard           |
+| `/logout`        | Logout userbot session                 |
+| `/userbot`       | Userbot status & options               |
+| `/automonitor`   | Automatic episode monitoring           |
 
 </details>
 
----
+<img src="assets/divider.png" width="100%" alt="divider">
 
-## ⚙️ Configuration
+<a id="architecture"></a>
 
-Edit `config.py` or use `.env`:
+## 🧬 ᴀ ʀ ᴄ ʜ ɪ ᴛ ᴇ ᴄ ᴛ ᴜ ʀ ᴇ
 
-| Variable                | Description                                      | Default     |
-|-------------------------|--------------------------------------------------|-------------|
-| `BOT_TOKEN`             | Telegram Bot Token                               | Required    |
-| `API_ID`                | Telegram API ID                                  | Required    |
-| `API_HASH`              | Telegram API Hash                                | Required    |
-| `OWNER_ID`              | Your Telegram ID                                 | Required    |
-| `MAIN_CHANNEL`          | Main library channel                             | `0`         |
-| `THUMB_TEMPLATE`        | Thumbnail style (`modern`, `cinematic` etc.)     | `modern`    |
-| `RANDOM_THUMB_TEMPLATE` | Random style every upload                        | `false`     |
-| `AUTO_DELETE_TIME`      | Media auto-delete timer (seconds)                | `600`       |
-| `MONGO_URI`             | MongoDB connection string                        | —           |
+```mermaid
+flowchart LR
+    A("📡 Episode & Movie Monitor") --> B{"🔎 Multi-Server Resolver"}
+    B --> C("⬇️ N_m3u8DL-RE Download Engine")
+    C --> D("🎨 Thumbnail Studio")
+    D --> E("⚡ WZGram MTProto Uploader · 2 GB")
+    E --> F[("🗄️ MongoDB Library Index")]
+    E --> G("📺 Channel Master Album")
+    G --> H("🔔 Notification Thread + Ongoing Channel")
+    J("👥 Worker Bot Swarm") -. serves files .-> U("🍥 Users")
+    G -. buttons .-> J
+```
 
----
+<img src="assets/divider.png" width="100%" alt="divider">
 
-## 🚀 Quick Start
+<a id="configuration"></a>
+
+## ⚙️ ᴄ ᴏ ɴ ꜰ ɪ ɢ ᴜ ʀ ᴀ ᴛ ɪ ᴏ ɴ
+
+Configure via `.env` **or** edit `config.py` directly — both are first-class. Copy the template:
+
+```bash
+cp .env.example .env
+```
+
+**Required to boot**
+
+| Variable      | Description                                        |
+|---------------|----------------------------------------------------|
+| `API_ID`      | Telegram API ID — [my.telegram.org](https://my.telegram.org) |
+| `API_HASH`    | Telegram API Hash                                  |
+| `BOT_TOKEN`   | Bot token from [@BotFather](https://t.me/BotFather)|
+| `OWNER_ID`    | Your Telegram user ID                              |
+| `MONGO_URI`   | MongoDB connection string (Atlas or local)         |
+| `MAIN_CHANNEL`| Main library channel ID (`-100…`)                  |
+
+<details>
+<summary><b>🧰 &nbsp;Show every option (styling, AI, security, thumbnails…)</b></summary>
+<br>
+
+| Variable                | Description                                            | Default      |
+|-------------------------|--------------------------------------------------------|--------------|
+| `ADMINS`                | Extra admin IDs, space-separated                       | —            |
+| `LOG_CHANNEL`           | Admin log / error channel ID                           | `0`          |
+| `DUMP_CHANNEL`          | Storage dump channel (`0` = off)                       | `0`          |
+| `ONGOING_CHANNEL`       | Ongoing-episode notification channel                   | `0`          |
+| `FSUB_CHANNEL`          | Force-sub channel (defaults to main)                   | —            |
+| `NETWORK_CHANNEL_LINK`  | Link for the *download network* button                 | `t.me/animedekho` |
+| `DATABASE_NAME`         | MongoDB database name                                  | `animedekho_bot` |
+| `THUMB_TEMPLATE`        | `modern` · `cinematic` · `movie_gold` · `neon_cyber` · `minimal` | `modern` |
+| `RANDOM_THUMB_TEMPLATE` | Random template every upload                           | `off`        |
+| `AUTO_THUMB`            | Auto-generate branded thumbnails                       | `on`         |
+| `AUTO_SEARCH`           | Type-in-chat search trigger                            | `on`         |
+| `FSUB_MOD`              | 2-minute expiring invite links                         | `on`         |
+| `AUTO_DELETE_TIME`      | Media self-destruct timer (seconds, `0` = off)         | `600`        |
+| `AUTO_SCHEDULE_POST`    | Daily schedule card at 12 AM IST                       | `off`        |
+| `START_STYLE` / `SCHED_STYLE` / `EP_STYLE` / `POST_STYLE` | UI styles: `classic` or `modern` | `classic` |
+| `START_PIC` / `START_MSG` | Custom /start banner & text                          | —            |
+| `FSUB_PIC` / `FSUB_MSG` | Custom FSub banner & text                              | —            |
+| `DEFAULT_ANIME_THUMB` / `DEFAULT_MOVIE_THUMB` | Fallback posters              | Unsplash URLs|
+| `ENABLE_CUSTOM_EMOJI`   | Render Telegram Premium custom emojis                  | `false`      |
+| `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` / `AI_ENABLED` | Autonomous AI agent tuning | `gpt-4o` |
+| `LOG_LEVEL`             | `DEBUG` · `INFO` · `WARNING` · `ERROR`                 | `INFO`       |
+
+</details>
+
+<img src="assets/divider.png" width="100%" alt="divider">
+
+<a id="deployment"></a>
+
+## 🚀 ᴅ ᴇ ᴘ ʟ ᴏ ʏ ᴍ ᴇ ɴ ᴛ
+
+<details open>
+<summary><b>🐳 &nbsp;Docker Compose — recommended</b></summary>
+<br>
 
 ```bash
 git clone https://github.com/jrodr254/animedekho-bot.git
 cd animedekho-bot
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-cp sample.env .env
-python3 main.py
+cp .env.example .env        # fill in your values
+docker compose up -d --build
 ```
 
-**Production ready** — Systemd, Docker, Railway & more supported.
+Ships with the **VidStream API sidecar** wired in automatically. `ffmpeg` + `N_m3u8DL-RE` are baked into the image.
 
----
+</details>
 
-## 📜 License
+<details>
+<summary><b>⚡ &nbsp;One-shot Ubuntu / EC2 setup</b></summary>
+<br>
 
-MIT License — Free to use and modify!
+```bash
+git clone https://github.com/jrodr254/animedekho-bot.git
+cd animedekho-bot
+bash setup.sh
+```
+
+Installs Docker, asks for your credentials interactively, builds the image and launches the bot.
+
+</details>
+
+<details>
+<summary><b>🖥️ &nbsp;Bare-metal VPS</b></summary>
+<br>
+
+```bash
+git clone https://github.com/jrodr254/animedekho-bot.git
+cd animedekho-bot
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env        # fill in your values
+python main.py
+```
+
+> Needs `ffmpeg` and the `N_m3u8DL-RE` binary on PATH for the download engine (the Docker image handles both for you).
+
+</details>
+
+<details>
+<summary><b>🚅 &nbsp;Railway</b></summary>
+<br>
+
+`railway.json` is already configured (Dockerfile builder, auto-restart). Import the repo, set the env vars from `.env.example`, hit deploy. A classic `Procfile` is also included for worker-style platforms.
+
+</details>
+
+<img src="assets/divider.png" width="100%" alt="divider">
+
+## 📜 ʟ ɪ ᴄ ᴇ ɴ s ᴇ
+
+Distributed under the **MIT License** — see [LICENSE](LICENSE). Free to use, modify and deploy.
 
 <div align="center">
-  <p><strong>Made with ❤️ for the Anime Community</strong></p>
-</div>
 
+**Made with ❤️ for the anime community**
+
+If AnimeDekho powers your channel, drop a ⭐ on the repo — it keeps the releases coming.
+
+<img src="assets/footer.png" width="100%" alt="">
+
+</div>
