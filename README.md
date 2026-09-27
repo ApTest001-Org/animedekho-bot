@@ -5,7 +5,7 @@
 <p align="center">
   <img src="https://images.unsplash.com/photo-1576477330363-5460ff24818d?w=1280" 
        alt="AnimeDekho Bot - Anime Streaming & Library Engine" 
-       style="max-width: 100%; border-radius: 20px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);"
+       style="max-width: 100%; border-radius: 20px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);"
        width="1280">
 </p>
 
@@ -34,16 +34,7 @@
 
 **AnimeDekho Bot** is a powerful automated Telegram engine that turns any anime channel into a professional streaming + archival platform.
 
-It fetches official AniList HD art, downloads multi-quality anime streams (480p → 4K), auto-generates stunning thumbnails, and maintains **single-post-per-anime** albums with zero duplicates.
-
-```mermaid
-flowchart LR
-    User --> Bot[AnimeDekho Bot]
-    Bot --> AniList[AniList GraphQL]
-    Bot --> Streams[Multi-Quality Streams]
-    Bot --> MongoDB[(MongoDB)]
-    Bot --> Thumbnail[Auto Thumbnail Studio]
-```
+It fetches official AniList HD art, downloads multi-quality streams (480p → 4K), auto-generates stunning thumbnails, and maintains **single-post-per-anime** albums with zero duplicates.
 
 ---
 
@@ -51,53 +42,90 @@ flowchart LR
 
 ### 🎨 Auto Thumbnail Studio (5 Premium Styles)
 
-Automatically generates beautiful 1280x720 HD thumbnails every time. 5 stunning designs + random mode!
+Automatically generates beautiful 1280x720 HD thumbnails. 5 stunning designs + random mode!
 
 | Style          | Vibe                          | Perfect For                  |
 |----------------|-------------------------------|------------------------------|
 | `modern`       | High-contrast dark neon       | Weekly TV episodes           |
-| `cinematic`    | Indigo widescreen letterbox   | Movies & long story arcs     |
+| `cinematic`    | Indigo widescreen letterbox   | Movies & story arcs          |
 | `movie_gold`   | Luxury metallic gold frame    | OVAs & feature films         |
 | `neon_cyber`   | Electric cyan + hot pink      | Shonen, Sci-Fi, Action       |
-| `minimal`      | Clean frosted glass look      | Aesthetic index channels     |
+| `minimal`      | Clean frosted glass look      | Aesthetic channels           |
 | `random`       | Dynamic every upload          | Surprise factor              |
 
 ### ⭐ Premium Telegram Emojis
 
-Full support for Telegram Premium custom emojis with beautiful Unicode fallback.
+Full support for Telegram Premium custom emojis + beautiful Unicode fallback.
 
 ### 📚 Smart Library Engine
 
-- **Single master post per anime** — Updates in-place when new episodes drop
-- **Auto movie → series routing** — Jujutsu Kaisen 0 goes to its parent series
-- **New episode notification thread** with clean HTML formatting
-- **Channel navigation buttons** + optional ongoing broadcast channel
+- Single master post per anime (updates in-place)  
+- Auto movie → series routing  
+- New episode notification thread  
+- Channel navigation buttons + optional ongoing channel
 
 ### 🔒 Advanced Security
 
-- 2-minute expiring invite links
-- Auto media delete with countdown
-- Unlimited child worker bots for load balancing
+- 2-minute expiring invite links  
+- Auto media delete with countdown  
+- Unlimited child worker bots  
 - Full privacy & rate-limit protection
 
 ---
 
-## ⚡ Quick Commands
+## ⚡ Quick Commands (Minimum)
+
+Only these 4 essential commands are shown by default. Tap **`/commands`** in the bot to open the full interactive guide.
 
 | Command       | Description                              |
 |---------------|------------------------------------------|
 | `/start`      | Main menu + welcome banner               |
-| `/search`     | Anime search across database              |
-| `/commands`   | Interactive command guide                 |
-| `/settings`   | Real-time admin panel (admins only)       |
+| `/search`     | Search anime across the entire database  |
+| `/commands`   | Open interactive command guide           |
+| `/settings`   | Real-time admin panel (admins only)      |
 
-*(Full command list available in-bot with `/commands`)*
+---
+
+## ⚡ Full Command List (Tap to Expand)
+
+<details>
+<summary>🔽 Tap to view all 17 commands</summary>
+
+<br>
+
+#### 👤 Public User Commands
+| Command          | Description                                      |
+|------------------|--------------------------------------------------|
+| `/start`         | Main menu + welcome banner                       |
+| `/search <title>`| Search across the entire AnimeDekho database     |
+| `/schedule`      | View 30-day upcoming dubbed anime releases       |
+| `/commands`      | Interactive visual catalog of all commands       |
+| `/help`          | Detailed bot usage manual                        |
+
+#### 👑 Admin & Owner Commands
+| Command             | Description                                      |
+|---------------------|--------------------------------------------------|
+| `/settings`         | Visual control panel with real-time toggles      |
+| `/stats`            | Live VPS hardware telemetry                      |
+| `/health`           | Self-diagnostic check for bot + MongoDB           |
+| `/users`            | User analytics                                   |
+| `/broadcast <msg>`  | Broadcast message to all users                    |
+| `/autosearch on/off`| Toggle direct chat search trigger                 |
+| `/automonitor on/off`| Toggle automated episode watcher                 |
+| `/setthumb`         | Set custom upload thumbnail                      |
+| `/delthumb`         | Remove custom upload thumbnail                   |
+| `/mapchannel`       | Map specific anime uploads to a channel          |
+| `/addbot <token>`   | Add unlimited child worker bots                  |
+| `/login`            | Interactive MTProto userbot login wizard         |
+| `/ai <prompt>`      | Natural-language anime assistant                 |
+
+</details>
 
 ---
 
 ## ⚙️ Configuration
 
-Edit `config.py` or use `.env` file:
+Edit `config.py` or use `.env`:
 
 | Variable                | Description                                      | Default     |
 |-------------------------|--------------------------------------------------|-------------|
@@ -116,24 +144,16 @@ Edit `config.py` or use `.env` file:
 ## 🚀 Quick Start
 
 ```bash
-# 1. Clone
-git clone https://github.com/TgbotWorld/animedekho-bot.git
+git clone https://github.com/jrodr254/animedekho-bot.git
 cd animedekho-bot
-
-# 2. Setup
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-
-# 3. Configure
 cp sample.env .env
-# Edit .env or config.py
-
-# 4. Run
 python3 main.py
 ```
 
-**Production ready** with Systemd support, Docker, Railway, and more.
+**Production ready** — Systemd, Docker, Railway & more supported.
 
 ---
 
