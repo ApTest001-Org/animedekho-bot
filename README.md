@@ -1,71 +1,73 @@
 <div align="center">
 
-# ⚡ AnimeDekho Bot
+# ❖ ANIME DEKHO BOT ❖
 
 <p align="center">
-  <img src="https://images.unsplash.com/photo-1578632767115-351597cf2477?w=1200&auto=format&fit=crop" width="100%" alt="AnimeDekho Bot Banner" style="border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);"/>
+  <img src="./assets/banner.jpg" width="100%" alt="AnimeDekho Bot Banner" style="border-radius: 12px;"/>
 </p>
 
-### *Next-Generation Telegram Anime Streaming & Library Automation Engine*
-
-[![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.14-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![WZGram](https://img.shields.io/badge/Engine-WZGram%20MTProto%202GB-0088cc?style=for-the-badge&logo=telegram&logoColor=white)](https://github.com/TgbotWorld/animedekho-bot)
-[![MongoDB](https://img.shields.io/badge/Database-MongoDB%20Async-47A248?style=for-the-badge&logo=mongodb&logoColor=white)](https://mongodb.com)
-[![AniList](https://img.shields.io/badge/Metadata-AniList%20GraphQL-02A9FF?style=for-the-badge&logo=anilist&logoColor=white)](https://anilist.co)
-[![License](https://img.shields.io/badge/License-MIT-F59E0B?style=for-the-badge)](./LICENSE)
+### ⚡ *Next-Generation Telegram Anime Streaming, Archival & Channel Automation Engine* ⚡
 
 <p align="center">
-  <a href="#-flagship-features">Features</a> •
-  <a href="#-interactive-commands">Commands</a> •
-  <a href="#-configuration">Configuration</a> •
-  <a href="#-system-architecture">Architecture</a> •
-  <a href="#-deployment--setup">Quick Start</a>
+  <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.14-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"/></a>
+  <a href="https://github.com/TgbotWorld/animedekho-bot"><img src="https://img.shields.io/badge/MTProto-WZGram%202GB%20Engine-0088cc?style=for-the-badge&logo=telegram&logoColor=white" alt="WZGram"/></a>
+  <a href="https://mongodb.com"><img src="https://img.shields.io/badge/Database-MongoDB%20Async-47A248?style=for-the-badge&logo=mongodb&logoColor=white" alt="MongoDB"/></a>
+  <a href="https://anilist.co"><img src="https://img.shields.io/badge/Metadata-AniList%20GraphQL-02A9FF?style=for-the-badge&logo=anilist&logoColor=white" alt="AniList"/></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-F59E0B?style=for-the-badge" alt="License"/></a>
+</p>
+
+<p align="center">
+  <a href="#-flagship-features"><b>[ ⚡ Features ]</b></a> &nbsp;•&nbsp;
+  <a href="#-quick-commands"><b>[ 🎮 Commands ]</b></a> &nbsp;•&nbsp;
+  <a href="#-configuration-guide"><b>[ ⚙️ Config ]</b></a> &nbsp;•&nbsp;
+  <a href="#-system-architecture"><b>[ 🏗️ Architecture ]</b></a> &nbsp;•&nbsp;
+  <a href="#-vps-deployment"><b>[ 🚀 Deploy ]</b></a>
 </p>
 
 ---
 
 </div>
 
-## 🌟 Overview
+## 🌌 What is AnimeDekho Bot?
 
 > [!NOTE]
-> **AnimeDekho Bot** is an automated Telegram publishing and streaming suite engineered for anime networks, archival channels, and communities. It eliminates channel clutter by indexing every anime into a **single master post**, auto-updating on new episode drops, routing movies directly to parent anime series channels, and generating studio-grade **1280x720 HD thumbnails** on the fly.
+> **AnimeDekho Bot** is an automated Telegram publishing engine engineered for anime networks, archival channels, and streaming communities. It automatically fetches official AniList HD artwork, downloads multi-quality streams (480p to 4K), generates branded 1280x720 video thumbnails, and maintains a clean **single-post-per-anime** channel library with zero duplicate clutter.
 
 ```
        AniList GraphQL ──┐
                          ▼
-Anime Streamers ──► [AnimeDekho Engine] ──► Auto-Thumb Studio ──► Main Library Channel
+Anime Streamers ──► [AnimeDekho Core] ──► Auto-Thumb Studio ──► Main Library Channel
                          ▲
 MongoDB Async   ─────────┘
 ```
 
 ---
 
-## 🚀 Flagship Features
+## ⚡ Flagship Features
 
 ### 🎨 Modular 5-Design Auto-Thumbnail Studio
-The bot features a built-in PIL-based graphics engine that automatically creates pristine **1280x720 HD (16:9)** thumbnails containing official artwork, season/episode tags, audio pills, and bot watermarks.
+Automatically generates crisp **1280x720 HD (16:9)** thumbnails using PIL, fusing official artwork, episode badges, audio tags, and channel branding. Choose your style or let the bot randomize per upload!
 
-| Style Name | Aesthetic & Palette | Highlights |
+| Style | Aesthetic Palette | Best Suited For |
 | :--- | :--- | :--- |
-| **`modern`** | High-contrast dark gradient with rounded artwork | Dual-gradient overlay, bright accent pills, clean typography |
-| **`cinematic`** | Indigo theatrical letterbox with silver framing | 16:9 widescreen bars, atmospheric glow, film-reel motif |
-| **`movie_gold`** | Luxury obsidian with metallic gold VIP frame | Specially tailored for movies, feature films & 4K specials |
-| **`neon_cyber`** | Cyberpunk theme with electric cyan & hot pink glow | Dual-color neon glow border, futuristic tech brackets |
-| **`minimal`** | Frosted glass translucent card with soft shadows | Modern frosted overlay, airy typography, uncluttered layout |
-| **`random`** | Dynamic per-upload rotation | Automatically picks a different design on every new episode |
+| **`modern`** | High-contrast dark gradient with rounded poster | Weekly anime TV episodes & simulcasts |
+| **`cinematic`** | Indigo widescreen letterbox with silver framing | Theatrical movies & dramatic story arcs |
+| **`movie_gold`** | Luxury obsidian & metallic gold VIP frame | Feature films, OVA specials & 4K releases |
+| **`neon_cyber`** | Cyberpunk theme with electric cyan & hot pink | Shonen, Sci-Fi & futuristic action series |
+| **`minimal`** | Translucent frosted glass card with soft shadows | Aesthetic, clean & uncluttered index channels |
+| **`random`** | Dynamic rotation mode | Automatically picks a different design on every upload |
 
 ---
 
 ### ⭐ Telegram Premium Custom Emojis
-- **Native Custom Emoji Support**: Renders Telegram Premium `<emoji id="...">` tags across library captions, movie posts, and start menus.
-- **Graceful Zero-Crash Fallback**: Automatically renders clean standard Unicode symbols (⭐, 🎬, 🔊, 📷, 🎭, ➽, ✓) if custom emojis are disabled, unsupported, or invalid.
+- **Native Custom Emoji Support**: Fully supports Telegram Premium `<emoji id="...">` tags across start menus, file captions, and library posts.
+- **100% Graceful Unicode Fallback**: If custom emojis are disabled or unsupported by the client, standard clean Unicode emojis (⭐, 🎬, 🔊, 📷, 🎭, ➽, ✓) render automatically with zero errors.
 
 ---
 
-### 🏛️ Main Library Channel UI & In-Place Auto-Updates
-- **Single Master Post Per Anime**: Never duplicate posts. The bot updates the existing album message in-place whenever a new episode is uploaded.
-- **New Episode Reply Thread**: When an episode is uploaded, the bot sends an automated reply directly to the series' main post:
+### 🏛️ Main Library Channel & In-Place Auto-Updates
+- **Single Master Post Per Anime**: Never duplicate posts. The bot updates the existing album message in-place whenever a new episode arrives.
+- **New Episode Reply Thread**: Automatically sends a clean notification reply directly to the series' main post:
 
 ```html
 <b>The Angel Next Door Spoils Me Rotten</b>
@@ -77,46 +79,45 @@ The bot features a built-in PIL-based graphics engine that automatically creates
 ```
 
 > [!TIP]
-> **Pure Text Hyperlink**: The notification contains **zero inline buttons** to keep the discussion thread clean, while allowing users to launch the bot flow in a single tap!
+> **Zero Inline Buttons on Reply**: The notification thread uses a pure text hyperlink, keeping the discussion section clean while allowing users to access files in a single tap!
 
-- **Refined Channel Buttons**:
-  - `[ DOWNLOAD ]` — Routes user directly to the mapped anime series channel.
-  - `[ DOWNLOAD NETWORK ]` — Links users to your main network channel.
-- **Dedicated Ongoing Feed**: Optionally broadcasts real-time release alerts to `ONGOING_CHANNEL`.
+- **Channel Navigation Buttons**:
+  - `[ DOWNLOAD ]` — Routes users into the mapped private anime channel join flow.
+  - `[ DOWNLOAD NETWORK ]` — Directs users to your main network channel.
+- **Ongoing Broadcast Channel**: Optionally mirrors new episode alerts to `ONGOING_CHANNEL`.
 
 ---
 
 ### 🎬 Smart Movie-to-Series Channel Routing
-- Movies and film sequels (e.g. *Demon Slayer: Mugen Train*, *Jujutsu Kaisen 0*) are automatically detected and uploaded to the **existing parent anime series channel**.
-- Prevents duplicate channel creation and keeps your anime network organized.
+- Franchise movies (e.g. *Demon Slayer: Mugen Train*, *Jujutsu Kaisen 0*) are automatically detected and uploaded to the **existing parent anime series channel**.
+- Keeps entire franchises organized under one roof and eliminates duplicate channels.
 
 ---
 
 ### 🛡️ Security, Privacy & Mesh Network
-- **2-Minute Expiring Invite Links**: Prevents link scraping with single-use time-limited channel invitations (`expire_date = now + 120s`).
-- **Media Auto-Delete Timer**: Automatically wipes delivered media from private user chats after a configurable timer (e.g. 10 minutes) with real-time countdown alerts.
-- **Multi-Worker Child Mesh**: Add unlimited auxiliary worker bots (`/addbot`) to balance download traffic and bypass Telegram API rate limits.
-- **Dual Configuration Engine**: Seamlessly switch between editing [`config.py`](file:///workspaces/animedekho-bot/config.py) directly or using `.env` variables.
+- **2-Minute Expiring Invite Links**: Generates dynamic single-use channel links (`expire_date = now + 120s`) to prevent link scraping and protect channels.
+- **Media Auto-Delete Timer**: Automatically deletes delivered media from private user chats after a set delay (e.g. 10m) with real-time countdown alerts.
+- **Child Worker Mesh**: Add unlimited auxiliary worker bots (`/addbot`) to balance download traffic and bypass Telegram API rate limits.
+- **Dual Configuration Engine**: Edit [`config.py`](file:///workspaces/animedekho-bot/config.py) directly or configure via `.env` environment variables.
 
 ---
 
-## ⚡ Interactive Commands
+## 🎮 Quick Commands
 
-### 📱 Quick Commands
+Only the 4 essential core commands are shown below. Tap the drawer underneath to view all available commands!
 
-Only the most frequently used commands are listed below. For full interactive navigation, tap `/commands` inside the bot!
-
-| Command | Action | Who Can Use |
+| Command | Action | Availability |
 | :--- | :--- | :---: |
 | `/start` | Open main menu, view releases, or access deep links | Everyone |
 | `/search <title>` | Search anime catalog for series and movies | Everyone |
 | `/commands` | Open interactive in-bot visual guide & category browser | Everyone |
 | `/settings` | Open real-time visual control panel (toggle features on the fly) | Admins |
 
----
+<br>
 
 <details>
-<summary><b>👇 Tap to Expand Full Command Directory (17 Commands)</b></summary>
+<summary><b>▶ TAP HERE TO VIEW COMPLETE COMMAND DIRECTORY (17 COMMANDS)</b></summary>
+
 <br>
 
 #### 👤 Public User Commands
@@ -149,7 +150,7 @@ Only the most frequently used commands are listed below. For full interactive na
 
 ---
 
-## ⚙️ Configuration
+## ⚙️ Configuration Guide
 
 Configure the bot by modifying [`config.py`](file:///workspaces/animedekho-bot/config.py) directly or by setting variables in a `.env` file:
 
@@ -215,17 +216,15 @@ flowchart TD
 
 ---
 
-## 🛠️ Deployment & Setup
+## 🚀 VPS Deployment
 
 ### Prerequisites
 - **Python**: 3.10, 3.11, 3.12, or 3.14
-- **FFmpeg**: Required for media stream verification and thumbnail processing
-- **MongoDB**: Local `mongod` instance or cloud-hosted [MongoDB Atlas](https://www.mongodb.com/atlas)
-
-### Standard Linux VPS Deployment
+- **FFmpeg**: Required for stream integrity checks and thumbnail generation
+- **MongoDB**: Local server or free [MongoDB Atlas](https://www.mongodb.com/atlas) cluster
 
 ```bash
-# 1. Update packages and install FFmpeg
+# 1. Update packages & install dependencies
 sudo apt update && sudo apt install -y python3 python3-pip python3-venv ffmpeg git
 
 # 2. Clone the repository
@@ -236,7 +235,7 @@ cd animedekho-bot
 python3 -m venv venv
 source venv/bin/activate
 
-# 4. Install dependencies
+# 4. Install requirements
 pip install --upgrade pip
 pip install -r requirements.txt
 
@@ -244,16 +243,16 @@ pip install -r requirements.txt
 cp sample.env .env
 nano .env   # (or edit config.py directly)
 
-# 6. Launch the bot
+# 6. Start the bot
 python3 main.py
 ```
 
-### 24/7 Production Service (Systemd)
+### 24/7 Background Service (Systemd)
 
 ```ini
 # /etc/systemd/system/animedekho.service
 [Unit]
-Description=AnimeDekho Telegram Bot
+Description=AnimeDekho Telegram Bot Service
 After=network.target
 
 [Service]
