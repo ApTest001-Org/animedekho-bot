@@ -252,6 +252,7 @@ def create_app() -> Client:
         api_id=settings.bot.api_id,
         api_hash=settings.bot.api_hash,
         bot_token=settings.bot.token,
+        max_concurrent_transmissions=1,
     )
 
     # Register startup/shutdown hooks

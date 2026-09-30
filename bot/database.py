@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import logging
+import re
 from datetime import datetime, timezone
 
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -892,13 +893,26 @@ class Database:
         """Set file auto-delete time in seconds (0 = disabled)."""
         await self.set_config("dlt_time", max(0, int(seconds)))
 
-    # ── Dump / Storage Channel (OFF by default) ──────────────────────
+    # ── Dump / Storage Channel (OFF by default unless configured) ────
 
     async def get_dump_channel(self) -> int | None:
-        """Get dump/storage channel ID if configured, else None (OFF by default)."""
+        """Get dump/storage channel ID if configured, else fallback to settings/config."""
         val = await self.get_config("dump_channel", default=None)
         if val is not None and str(val).lstrip("-").isdigit():
             return int(val)
+        try:
+            from config.settings import settings
+            if settings and settings.bot and settings.bot.dump_channel:
+                return int(settings.bot.dump_channel)
+        except Exception:
+            pass
+        try:
+            from config import Config
+            c_val = getattr(Config, "DUMP_CHANNEL", None)
+            if c_val and str(c_val).lstrip("-").isdigit():
+                return int(c_val)
+        except Exception:
+            pass
         return None
 
     async def set_dump_channel(self, channel_id: int | None):
@@ -907,6 +921,33 @@ class Database:
             await self.set_config("dump_channel", int(channel_id))
         else:
             await self.set_config("dump_channel", None)
+
+    # ── Upload Mode Configuration (Default: 'video') ─────────────────
+
+    async def get_upload_mode(self) -> str:
+        """Get media upload mode ('video' or 'document'). Default is 'video'."""
+        val = await self.get_config("upload_mode", default="video")
+        return str(val).lower() if val in ("video", "document") else "video"
+
+    async def set_upload_mode(self, mode: str):
+        """Set media upload mode ('video' or 'document')."""
+        clean_mode = "document" if mode.strip().lower() == "document" else "video"
+        await self.set_config("upload_mode", clean_mode)
+
+    # ── Channel Monitor Controls ─────────────────────────────────────
+
+    async def get_monitored_channel_status(self, channel_id: int) -> bool:
+        """Check if monitoring is enabled for a specific channel (defaults to True)."""
+        key = f"monitor_chan_{channel_id}"
+        val = await self.get_config(key, default=None)
+        if val is not None:
+            return bool(val)
+        return True
+
+    async def set_monitored_channel_status(self, channel_id: int, enabled: bool):
+        """Enable or disable monitoring for a specific channel."""
+        key = f"monitor_chan_{channel_id}"
+        await self.set_config(key, bool(enabled))
 
     # ── Custom Thumbnail System (OFF by default, falls back to poster) ──
 

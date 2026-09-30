@@ -156,6 +156,9 @@ def _format_schedule_text(
     return "\n".join(lines), total_pages
 
 
+_format_classic_schedule_text = _format_schedule_text
+
+
 def _format_modern_schedule_text(
     schedules: list[dict],
     mode: str,

@@ -135,16 +135,26 @@ class LibraryManager:
                     e_part = episode_key
 
             q_param = quality or "720p"
-            request_link = f"https://t.me/{self.bot_username}?start=get_{series_slug}_{q_param}_{episode_key}"
+            from utils.helpers import encode_file_param
+            sec_param = encode_file_param(f"get_{series_slug}_{q_param}_{episode_key}")
+            file_link = f"https://t.me/{self.bot_username}?start={sec_param}"
 
             reply_text = (
                 f"<b>{series_title}</b>\n"
                 f"<b>──────────────────────</b>\n\n"
-                f"<blockquote>• {s_part} | {e_part} | #Added {check_emoji}</blockquote>\n\n"
-                f'<a href="{request_link}">Start The Bot And Get Linke Here</a>'
+                f"<blockquote>• {s_part} | {e_part} | #Added {check_emoji}</blockquote>"
             )
 
-            # Send as reply in main channel without any inline buttons
+            # Build action buttons for notification
+            notif_buttons = []
+            mapping = await self.db.get_channel_mapping(series_slug, title=series_title) if self.db else None
+            if mapping and mapping.get("channel_id"):
+                join_link = f"https://t.me/{self.bot_username}?start=join_{series_slug}"
+                notif_buttons.append([InlineKeyboardButton("🚀 Open Channel", url=join_link)])
+            notif_buttons.append([InlineKeyboardButton("📥 Get File", url=file_link)])
+            notif_markup = InlineKeyboardMarkup(notif_buttons)
+
+            # Send as reply in main channel
             if target_message_id and self.channel:
                 try:
                     await self.client.send_message(
@@ -153,6 +163,7 @@ class LibraryManager:
                         reply_to_message_id=target_message_id,
                         parse_mode=enums.ParseMode.HTML,
                         disable_web_page_preview=True,
+                        reply_markup=notif_markup,
                     )
                 except Exception as e:
                     log.warning("Failed sending episode reply notification: %s", e)
@@ -170,9 +181,11 @@ class LibraryManager:
                         text=reply_text,
                         parse_mode=enums.ParseMode.HTML,
                         disable_web_page_preview=True,
+                        reply_markup=notif_markup,
                     )
                     log.info("Posted episode update to ongoing channel: %s", ongoing_ch)
                 except Exception as e:
+                    log.warning("Failed posting to ongoing channel %s: %s", ongoing_ch, e)
                     log.warning("Failed posting to ongoing channel %s: %s", ongoing_ch, e)
 
         except Exception as e:
@@ -327,10 +340,34 @@ class LibraryManager:
                     poster_path = await _download_poster(def_thumb)
 
             if poster_path:
+                display_photo = poster_path
+                temp_card_path = None
+                try:
+                    from bot.thumbnail import generate_thumbnail
+                    auto_thumb_on = await self.db.get_auto_thumb() if self.db else True
+                    if auto_thumb_on or post_style == "modern":
+                        template_choice = await self.db.get_thumb_template() if self.db else "modern"
+                        if is_movie:
+                            template_choice = "movie_gold"
+                        gen_card = generate_thumbnail(
+                            title=series_title,
+                            quality="HD",
+                            season=1,
+                            episode=len(sorted_eps) or 1,
+                            poster_path=poster_path,
+                            template=template_choice,
+                            is_movie=is_movie,
+                        )
+                        if gen_card and os.path.exists(gen_card):
+                            display_photo = gen_card
+                            temp_card_path = gen_card
+                except Exception as gte:
+                    log.debug("Modern card generation for channel album skipped: %s", gte)
+
                 try:
                     msg = await self.client.send_photo(
                         chat_id=self.channel,
-                        photo=poster_path,
+                        photo=display_photo,
                         caption=caption[:CAPTION_LIMIT],
                         parse_mode=enums.ParseMode.HTML,
                         reply_markup=markup,
@@ -346,6 +383,9 @@ class LibraryManager:
                         reply_markup=markup,
                     )
                 finally:
+                    if temp_card_path and os.path.exists(temp_card_path):
+                        try: os.remove(temp_card_path)
+                        except Exception: pass
                     try:
                         os.remove(poster_path)
                     except Exception:
@@ -622,7 +662,6 @@ class LibraryManager:
             genres_str = "Action, Drama, Fantasy, Anime"
             duration_str = "24 min/ep"
             branding = f"@{self.bot_username}"
-            channel_entry = f"📢 <b>Channel:</b> <a href='{join_deep}'>Join Series Channel</a>\n" if join_deep else ""
 
             return (
                 f"<b>{title_esc}</b> ❞\n\n"
@@ -634,13 +673,10 @@ class LibraryManager:
                 f"❦ <b>SEASON:</b> {season_str}\n"
                 f"♡ <b>GENRES:</b> {genres_str}\n"
                 f"└───────────────\n"
-                f"{channel_entry}"
                 f"➥ <b>{branding}</b>"
             )
 
         channel_line = ""
-        if channel_mapping and join_deep:
-            channel_line = f"➥ 📢 Cʜᴀɴɴᴇʟ:- <a href='{join_deep}'>Join Series Channel</a>\n"
 
         # Group episodes by season
         seasons: dict[int, list[int]] = {}
@@ -716,6 +752,7 @@ class LibraryManager:
             buttons.append([download_btn, network_btn])
 
         # Direct download bot buttons
+        from utils.helpers import encode_file_param
         if is_movie:
             row = []
             for q in qualities:
@@ -724,7 +761,8 @@ class LibraryManager:
                     assigned = child_bot_manager.get_bot_for_quality(q)
                     if assigned:
                         target_bot = assigned
-                deep = f"https://t.me/{target_bot}?start=get_{series_slug}_{q}_movie"
+                sec_p = encode_file_param(f"get_{series_slug}_{q}_movie")
+                deep = f"https://t.me/{target_bot}?start={sec_p}"
                 row.append(InlineKeyboardButton(f"📥 {q}", url=deep))
                 if len(row) == 2:
                     buttons.append(row)
@@ -738,7 +776,8 @@ class LibraryManager:
                     assigned = child_bot_manager.get_bot_for_quality(q)
                     if assigned:
                         target_bot = assigned
-                deep = f"https://t.me/{target_bot}?start=get_{series_slug}_{q}_all"
+                sec_p = encode_file_param(f"get_{series_slug}_{q}_all")
+                deep = f"https://t.me/{target_bot}?start={sec_p}"
                 buttons.append([InlineKeyboardButton(f"📥 Get All Episodes [{q}]", url=deep)])
 
         if not buttons:

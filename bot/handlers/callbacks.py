@@ -22,10 +22,16 @@ from utils.helpers import esc, truncate, short_slug, extract_series_slug, slug_t
 log = logging.getLogger(__name__)
 
 
-@require_approved
 async def callback_router(client: Client, query: CallbackQuery):
     await query.answer()
     data = query.data
+
+    user = query.from_user
+    user_id = user.id if user else 0
+    from bot.database import db
+    if db and user_id and await db.is_banned(user_id):
+        await query.answer("⛔ You are banned from using this bot.", show_alert=True)
+        return
 
     try:
         if data == "m:main":
@@ -946,9 +952,13 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
             if success:
                 completed += 1
                 if bot.logger.bot_logger:
+                    sent_bytes = 0
+                    if sent_msg:
+                        sent_bytes = (sent_msg.video.file_size if sent_msg.video else (sent_msg.document.file_size if sent_msg.document else 0)) or 0
+                    sent_mb = sent_bytes / (1024 * 1024)
                     await bot.logger.bot_logger.log_download_complete(
                         f"{series.title} S{season}E{ep.number}",
-                        chosen_q.resolution, 0
+                        chosen_q.resolution, sent_mb
                     )
 
                 # Save to library
@@ -1145,7 +1155,11 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                     log.warning("ToonFlix fallback in _do_download failed: %s", e)
 
         if success and bot.logger.bot_logger:
-            await bot.logger.bot_logger.log_download_complete(title, chosen_quality.resolution, 0)
+            sent_bytes = 0
+            if sent_msg:
+                sent_bytes = (sent_msg.video.file_size if sent_msg.video else (sent_msg.document.file_size if sent_msg.document else 0)) or 0
+            sent_mb = sent_bytes / (1024 * 1024)
+            await bot.logger.bot_logger.log_download_complete(title, chosen_quality.resolution, sent_mb)
 
         # Save to library if upload succeeded
         if success and sent_msg:

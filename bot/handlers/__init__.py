@@ -13,6 +13,7 @@ from .admin import (
     cmd_health, cmd_logs, cmd_errors, cmd_clearerrors, health_callback,
     cmd_setdump, cmd_setthumb, cmd_delthumb, cmd_viewthumb, cmd_automonitor, cmd_poststyle,
     cmd_startstyle, cmd_startpic, cmd_epstyle, cmd_schedstyle,
+    cmd_setaudio, map_audio_callback, cmd_postsched,
 )
 from .admin_ai import cmd_setai, cmd_ai
 from .worker_admin import (
@@ -41,6 +42,7 @@ __all__ = [
     "cmd_schedule", "schedule_callback",
     "cmd_setdump", "cmd_setthumb", "cmd_delthumb", "cmd_viewthumb", "cmd_automonitor", "cmd_poststyle",
     "cmd_startstyle", "cmd_startpic", "cmd_epstyle", "cmd_schedstyle", "start_callback",
+    "cmd_setaudio", "map_audio_callback", "cmd_postsched",
     "register_handlers",
 ]
 
@@ -108,6 +110,8 @@ def register_handlers(app: Client):
     app.add_handler(MessageHandler(cmd_mapchannel, filters.command("mapchannel") & filters.private))
     app.add_handler(MessageHandler(cmd_unmapchannel, filters.command("unmapchannel") & filters.private))
     app.add_handler(MessageHandler(cmd_channels, filters.command("channels") & filters.private))
+    app.add_handler(MessageHandler(cmd_setaudio, filters.command("setaudio") & filters.private))
+    app.add_handler(MessageHandler(cmd_postsched, filters.command("postsched") & filters.private))
 
     # Health, Diagnostics & System Monitoring
     app.add_handler(MessageHandler(cmd_health, filters.command(["health", "status"]) & filters.private))
@@ -123,6 +127,7 @@ def register_handlers(app: Client):
     app.add_handler(CallbackQueryHandler(start_callback, filters.regex(r"^start:")))
     app.add_handler(CallbackQueryHandler(commands_callback, filters.regex(r"^(cmd_cat:|open_settings)")))
     app.add_handler(CallbackQueryHandler(settings_callback, filters.regex(r"^(set_toggle:|settings_action:)")))
+    app.add_handler(CallbackQueryHandler(map_audio_callback, filters.regex(r"^map_audio:")))
     app.add_handler(CallbackQueryHandler(health_callback, filters.regex(r"^health:")))
     app.add_handler(CallbackQueryHandler(delete_callback, filters.regex(r"^del:")))
     app.add_handler(CallbackQueryHandler(dlt_time_callback, filters.regex(r"^dlt:\d+$")))

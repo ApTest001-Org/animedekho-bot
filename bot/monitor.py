@@ -127,6 +127,12 @@ class EpisodeMonitorService:
         from bot.database import db
         from api.client import api_client
 
+        if channel_id is not None and db:
+            is_monitored = await db.get_monitored_channel_status(channel_id)
+            if is_monitored is False:
+                log.debug("EpisodeMonitorService: Channel %s is disabled for monitoring. Skipping %s.", channel_id, series_slug)
+                return 0
+
         series_data = await api_client.get_series(series_slug)
         if not series_data or not series_data.seasons:
             return 0
@@ -166,6 +172,10 @@ class EpisodeMonitorService:
             log.warning("No destination channel for auto-monitor upload of %s", series.title)
             return False
 
+        # Route notices to Dump Channel (fallback to owner if not set) - Issue #12
+        dump_chan = await db.get_dump_channel() if db else None
+        notify_chat = dump_chan if dump_chan else settings.bot.owner_id
+
         try:
             # 1. Resolve episode stream
             episode_detail = await api_client.get_episode(ep.slug)
@@ -196,28 +206,54 @@ class EpisodeMonitorService:
                 log.warning("No stream URL for %s %s", series.title, ep.slug)
                 return False
 
-            # 2. Progress dummy message
-            progress_msg = await self.client.send_message(
-                chat_id=settings.bot.owner_id,
-                text=f"🔄 <b>Auto-Monitor Download Started:</b>\n{series.title} S{season_num}E{ep.number} [{best_quality.resolution}]",
-                parse_mode=enums.ParseMode.HTML,
-            )
+            # 2. Progress notice sent to Dump Channel (or owner)
+            progress_msg = None
+            if notify_chat and self.client:
+                try:
+                    progress_msg = await self.client.send_message(
+                        chat_id=notify_chat,
+                        text=f"🔄 <b>Auto-Monitor Download Started:</b>\n{series.title} S{season_num}E{ep.number} [{best_quality.resolution}]",
+                        parse_mode=enums.ParseMode.HTML,
+                    )
+                except Exception as ne:
+                    log.warning("Could not send progress notice to %s: %s", notify_chat, ne)
 
             filename = make_episode_filename(series.title, season_num, ep.number, best_quality.resolution)
-            success, sent_msg = await download_and_upload(
-                chat_id=settings.bot.owner_id,
-                stream_url=best_stream_url,
-                quality=best_quality.resolution,
-                filename=filename,
-                title=f"{series.title} S{season_num}E{ep.number}",
-                progress_msg=progress_msg,
-                client=self.client,
-                poster_url=series.poster,
-                destination_channel_id=dest_chan,
-                series_slug=series.slug,
-            )
+
+            # Retry loop (2-3 retries) on failure before giving up - Issue #12
+            max_retries = 3
+            success = False
+            sent_msg = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    success, sent_msg = await download_and_upload(
+                        chat_id=notify_chat or settings.bot.owner_id,
+                        stream_url=best_stream_url,
+                        quality=best_quality.resolution,
+                        filename=filename,
+                        title=f"{series.title} S{season_num}E{ep.number}",
+                        progress_msg=progress_msg,
+                        client=self.client,
+                        poster_url=series.poster,
+                        destination_channel_id=dest_chan,
+                        series_slug=series.slug,
+                    )
+                    if success and sent_msg:
+                        break
+                    log.warning("Auto-Monitor download attempt %d/%d failed for %s", attempt, max_retries, filename)
+                    await asyncio.sleep(5)
+                except Exception as attempt_err:
+                    log.warning("Auto-Monitor download attempt %d/%d error for %s: %s", attempt, max_retries, filename, attempt_err)
+                    await asyncio.sleep(5)
 
             if success and sent_msg:
+                # Delete download notice upon success - Issue #12
+                if progress_msg:
+                    try:
+                        await progress_msg.delete()
+                    except Exception:
+                        pass
+
                 # Cache file
                 fid = sent_msg.video.file_id if sent_msg.video else (sent_msg.document.file_id if sent_msg.document else "")
                 f_uid = sent_msg.video.file_unique_id if sent_msg.video else (sent_msg.document.file_unique_id if sent_msg.document else "")
@@ -255,6 +291,38 @@ class EpisodeMonitorService:
                         f"📢 Uploaded to channel: <code>{dest_chan}</code>"
                     )
                 return True
+            else:
+                # Delete progress notice on final failure
+                if progress_msg:
+                    try:
+                        await progress_msg.delete()
+                    except Exception:
+                        pass
+
+                # Send failure notice and auto-delete after 120 hours - Issue #12
+                if notify_chat and self.client:
+                    try:
+                        from bot.auto_delete import auto_delete_service
+                        fail_msg = await self.client.send_message(
+                            chat_id=notify_chat,
+                            text=(
+                                f"⚠️ <b>Auto-Monitor Download Failed:</b>\n"
+                                f"📺 {series.title} S{season_num}E{ep.number} [{best_quality.resolution}]\n"
+                                f"❌ Failed after {max_retries} attempts.\n"
+                                f"<i>(This notice will auto-delete in 120 hours)</i>"
+                            ),
+                            parse_mode=enums.ParseMode.HTML,
+                        )
+                        if fail_msg and auto_delete_service:
+                            auto_delete_service.schedule_deletion(
+                                chat_id=fail_msg.chat.id,
+                                message_ids=[fail_msg.id],
+                                custom_seconds=120 * 3600,
+                            )
+                    except Exception as fe:
+                        log.warning("Failed sending monitor failure notice: %s", fe)
+                return False
+
         except Exception as e:
             log.error("Failed auto-uploading episode %s: %s", ep.slug, e)
 

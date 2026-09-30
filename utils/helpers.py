@@ -32,3 +32,30 @@ def slug_to_title(slug: str) -> str:
 def extract_series_slug(ep_slug: str) -> str | None:
     m = re.match(r"(.+)-\d+x\d+", ep_slug)
     return m.group(1) if m else None
+
+
+import base64
+
+
+def encode_file_param(param: str) -> str:
+    """Encode a deep link parameter (e.g. 'get_series_720p_S1E01') to a secure URL-safe base64 string."""
+    if not param:
+        return ""
+    return base64.urlsafe_b64encode(param.encode("utf-8")).decode("utf-8").rstrip("=")
+
+
+def decode_file_param(param: str) -> str:
+    """Decode a base64 URL-safe parameter. Returns original if already raw 'get_' or if decoding fails."""
+    if not param:
+        return ""
+    if param.startswith("get_") or param.startswith("join_"):
+        return param
+    try:
+        padded = param + "=" * ((4 - len(param) % 4) % 4)
+        decoded = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
+        if decoded.startswith("get_") or decoded.startswith("join_"):
+            return decoded
+    except Exception:
+        pass
+    return param
+

@@ -722,40 +722,54 @@ async def cmd_createchannel(client: Client, message: Message):
 
 @require_owner
 async def cmd_mapchannel(client: Client, message: Message):
-    """Manually map an existing Telegram channel to an anime series slug."""
+    """Manually map an existing Telegram channel to an anime series title/slug.
+    
+    Accepts natural series names without forced dashes:
+      /mapchannel Solo Leveling -100123456789
+      /mapchannel Solo Leveling -100123456789 https://t.me/+AbCdEf
+    """
     from bot.database import db
     args = _parse_args(message)
     if len(args) < 2:
         await message.reply_text(
-            "Usage: /mapchannel <series_slug> <channel_id> [invite_link]\n\n"
-            "Example: /mapchannel solo-leveling-hindi -100123456789 https://t.me/+AbCdEf"
+            "<b>Usage:</b> <code>/mapchannel &lt;series_name or slug&gt; &lt;channel_id&gt; [invite_link]</code>\n\n"
+            "<b>Examples:</b>\n"
+            "• <code>/mapchannel Solo Leveling -100123456789</code>\n"
+            "• <code>/mapchannel Solo Leveling -100123456789 https://t.me/+AbCdEf</code>\n"
+            "• <code>/mapchannel solo-leveling-hindi -100123456789</code>",
+            parse_mode=enums.ParseMode.HTML,
         )
         return
 
-    slug = args[0].strip()
-    try:
-        channel_id = int(args[1].strip())
-    except ValueError:
-        await message.reply_text("❌ Channel ID must be an integer (e.g. -100123456789).")
+    # Find the channel ID token (starts with -100 or integer)
+    cid_idx = -1
+    for i, token in enumerate(args):
+        cleaned = token.strip()
+        if cleaned.lstrip("-").isdigit():
+            cid_idx = i
+            break
+
+    if cid_idx == -1:
+        await message.reply_text("❌ Please specify a valid integer Channel ID (e.g. <code>-100123456789</code>).", parse_mode=enums.ParseMode.HTML)
         return
 
-    language = ""
+    name_tokens = args[:cid_idx]
+    if not name_tokens:
+        await message.reply_text("❌ Please specify the anime series name before the Channel ID.", parse_mode=enums.ParseMode.HTML)
+        return
+
+    series_name = " ".join(name_tokens).strip()
+    slug = re.sub(r'[^a-zA-Z0-9]+', '-', series_name).strip('-').lower()
+    channel_id = int(args[cid_idx].strip())
+
     invite_link = ""
-
-    # Parse optional language and invite_link
-    if len(args) > 2:
-        arg2 = args[2].strip()
-        if arg2.startswith("http://") or arg2.startswith("https://") or arg2.startswith("t.me"):
-            invite_link = arg2
-        else:
-            language = arg2.lower()
-
-    if len(args) > 3:
-        arg3 = args[3].strip()
-        if not invite_link and (arg3.startswith("http://") or arg3.startswith("https://") or arg3.startswith("t.me")):
-            invite_link = arg3
+    language = ""
+    for extra in args[cid_idx + 1:]:
+        extra_clean = extra.strip()
+        if extra_clean.startswith("http://") or extra_clean.startswith("https://") or extra_clean.startswith("t.me"):
+            invite_link = extra_clean
         elif not language:
-            language = arg3.lower()
+            language = extra_clean.lower()
 
     if not db:
         await message.reply_text("⚠️ Database not available.")
@@ -765,21 +779,115 @@ async def cmd_mapchannel(client: Client, message: Message):
         series_slug=slug,
         channel_id=channel_id,
         invite_link=invite_link,
-        series_title=slug,
+        series_title=series_name,
         auto_created=False,
         created_by=message.from_user.id,
         language=language,
     )
 
-    lang_note = f"\n🌐 <b>Language Route:</b> <code>{language.upper()}</code>" if language else "\n🌐 <b>Route:</b> <code>DEFAULT</code>"
+    # Auto-enable monitoring for this mapped channel (Issue #12)
+    await db.set_monitored_channel_status(channel_id, True)
+    await db.add_monitored_series(series_slug=slug, series_title=series_name, channel_id=channel_id)
+
+    # Interactive audio selection keyboard (Issue #14)
+    audio_markup = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🇮🇳 Hindi", callback_data=f"map_audio:{slug}:hindi"),
+            InlineKeyboardButton("🇬🇧 English", callback_data=f"map_audio:{slug}:english"),
+        ],
+        [
+            InlineKeyboardButton("🇯🇵 Japanese", callback_data=f"map_audio:{slug}:japanese"),
+            InlineKeyboardButton("🌐 Multi Audio", callback_data=f"map_audio:{slug}:multi"),
+        ],
+    ])
+
+    lang_note = f"\n🌐 <b>Audio:</b> <code>{language.upper()}</code>" if language else "\n🌐 <b>Audio:</b> <i>Select below</i>"
     await message.reply_text(
         f"✅ <b>Channel Mapped Successfully!</b>\n\n"
+        f"📺 <b>Series:</b> {htmlmod.escape(series_name)}\n"
         f"🏷️ <b>Slug:</b> <code>{slug}</code>\n"
         f"🆔 <b>Channel ID:</b> <code>{channel_id}</code>{lang_note}\n"
-        f"🔗 <b>Invite Link:</b> {invite_link or 'None'}",
+        f"🔗 <b>Invite Link:</b> {invite_link or 'None'}\n"
+        f"🔄 <b>Auto-Monitor:</b> 🟢 Enabled\n\n"
+        f"🎧 <b>Choose Audio Track for uploads to this channel:</b>\n"
+        f"<i>(You can change this later with /setaudio {slug} &lt;audio&gt;)</i>",
         parse_mode=enums.ParseMode.HTML,
+        reply_markup=audio_markup,
         disable_web_page_preview=True,
     )
+
+
+@require_owner
+async def cmd_setaudio(client: Client, message: Message):
+    """Change or set audio language route for a mapped anime channel."""
+    from bot.database import db
+    args = _parse_args(message)
+    if len(args) < 2:
+        await message.reply_text(
+            "<b>Usage:</b> <code>/setaudio &lt;series_slug&gt; &lt;hindi|english|japanese|multi&gt;</code>\n"
+            "<b>Example:</b> <code>/setaudio solo-leveling hindi</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    slug = args[0].strip().lower()
+    audio = args[1].strip().lower()
+    if audio not in ("hindi", "english", "japanese", "multi", "multi audio"):
+        await message.reply_text("❌ Valid audio options: <code>hindi</code>, <code>english</code>, <code>japanese</code>, <code>multi</code>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    if db:
+        mapping = await db.get_channel_mapping(slug)
+        if not mapping:
+            await message.reply_text(f"❌ No mapped channel found for series <code>{slug}</code>.", parse_mode=enums.ParseMode.HTML)
+            return
+        await db.set_channel_mapping(
+            series_slug=slug,
+            channel_id=mapping["channel_id"],
+            invite_link=mapping.get("invite_link", ""),
+            series_title=mapping.get("series_title", slug),
+            language=audio,
+        )
+        await message.reply_text(f"✅ Audio for <code>{slug}</code> updated to: <b>{audio.upper()}</b>", parse_mode=enums.ParseMode.HTML)
+
+
+async def map_audio_callback(client: Client, query: CallbackQuery):
+    """Handle interactive audio language selection after mapping."""
+    user = query.from_user
+    from bot.auth import is_owner
+    if user and not is_owner(user.id):
+        await query.answer("⛔ Owner only", show_alert=True)
+        return
+
+    data = query.data
+    parts = data.split(":", 2)
+    if len(parts) < 3:
+        return
+    slug, audio = parts[1], parts[2]
+
+    from bot.database import db
+    if db:
+        mapping = await db.get_channel_mapping(slug)
+        if mapping:
+            await db.set_channel_mapping(
+                series_slug=slug,
+                channel_id=mapping["channel_id"],
+                invite_link=mapping.get("invite_link", ""),
+                series_title=mapping.get("series_title", slug),
+                language=audio,
+            )
+    await query.answer(f"Audio set to {audio.upper()}!")
+    try:
+        await query.message.edit_text(
+            f"✅ <b>Audio Configured!</b>\n\n"
+            f"🏷️ <b>Slug:</b> <code>{slug}</code>\n"
+            f"🎧 <b>Selected Audio:</b> <code>{audio.upper()}</code>\n\n"
+            f"<i>Channel post buttons and monitor downloads will target {audio.upper()} audio.</i>\n"
+            f"<i>To change this later, use: <code>/setaudio {slug} &lt;audio&gt;</code></i>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    except Exception:
+        pass
 
 
 @require_owner
@@ -1170,14 +1278,26 @@ async def cmd_automonitor(client: Client, message: Message):
     sub = args[0].strip().lower()
 
     if sub in ("on", "enable", "start", "1"):
-        if db:
-            await db.set_auto_monitor_enabled(True)
-        await message.reply_text("🟢 <b>Auto-Monitor Enabled!</b> The bot will periodically check for new episode releases and upload them automatically.", parse_mode=enums.ParseMode.HTML)
+        if len(args) > 1 and args[1].lstrip("-").isdigit():
+            cid = int(args[1])
+            if db:
+                await db.set_monitored_channel_status(cid, True)
+            await message.reply_text(f"🟢 <b>Monitoring Enabled for Channel:</b> <code>{cid}</code>", parse_mode=enums.ParseMode.HTML)
+        else:
+            if db:
+                await db.set_auto_monitor_enabled(True)
+            await message.reply_text("🟢 <b>Auto-Monitor Enabled globally!</b> The bot will periodically check for new episode releases and upload them automatically.", parse_mode=enums.ParseMode.HTML)
 
     elif sub in ("off", "disable", "stop", "0"):
-        if db:
-            await db.set_auto_monitor_enabled(False)
-        await message.reply_text("🔴 <b>Auto-Monitor Disabled.</b> Background checks stopped.", parse_mode=enums.ParseMode.HTML)
+        if len(args) > 1 and args[1].lstrip("-").isdigit():
+            cid = int(args[1])
+            if db:
+                await db.set_monitored_channel_status(cid, False)
+            await message.reply_text(f"🔴 <b>Monitoring Disabled for Channel:</b> <code>{cid}</code>", parse_mode=enums.ParseMode.HTML)
+        else:
+            if db:
+                await db.set_auto_monitor_enabled(False)
+            await message.reply_text("🔴 <b>Auto-Monitor Disabled globally.</b> Background checks stopped.", parse_mode=enums.ParseMode.HTML)
 
     elif sub in ("status", "info"):
         enabled = await db.get_auto_monitor_enabled() if db else False
@@ -1404,5 +1524,33 @@ async def cmd_schedstyle(client: Client, message: Message):
         if db:
             await db.set_sched_style("classic")
         await message.reply_text("✅ <b>Schedule Style set to CLASSIC!</b> /schedule will display standard list layout.", parse_mode=enums.ParseMode.HTML)
+
+
+@require_owner
+async def cmd_postsched(client: Client, message: Message):
+    """Manually test and trigger the daily schedule post to the main channel or specified channel."""
+    from bot.schedule import auto_schedule_service
+    from bot.database import db
+    from config.settings import settings
+
+    args = _parse_args(message)
+    target_channel = None
+    if args and args[0].lstrip("-").isdigit():
+        target_channel = int(args[0])
+    else:
+        target_channel = settings.bot.main_channel
+        if not target_channel and db:
+            target_channel = await db.get_main_channel()
+
+    if not target_channel:
+        await message.reply_text("❌ No main channel configured. Usage: <code>/postsched &lt;channel_id&gt;</code>", parse_mode=enums.ParseMode.HTML)
+        return
+
+    status_msg = await message.reply_text(f"🔄 Posting daily schedule to channel <code>{target_channel}</code>...", parse_mode=enums.ParseMode.HTML)
+    ok = await auto_schedule_service.post_daily_schedule(client, target_channel)
+    if ok:
+        await status_msg.edit_text(f"✅ <b>Daily schedule successfully posted</b> to channel <code>{target_channel}</code>!", parse_mode=enums.ParseMode.HTML)
+    else:
+        await status_msg.edit_text(f"❌ <b>Failed to post daily schedule</b> to channel <code>{target_channel}</code>. Check bot logs.", parse_mode=enums.ParseMode.HTML)
 
 

@@ -538,9 +538,22 @@ async def resolve_m3u8_variant(master_url: str, target_quality: str, referer: st
     if not master_url or ".m3u8" not in master_url.lower():
         return master_url
 
+    t_clean = target_quality.strip().lower()
     h_target = None
-    if target_quality.endswith("p") and target_quality[:-1].isdigit():
-        h_target = int(target_quality[:-1])
+    if t_clean.endswith("p") and t_clean[:-1].isdigit():
+        h_target = int(t_clean[:-1])
+    elif t_clean.isdigit():
+        h_target = int(t_clean)
+    elif "4k" in t_clean or "2160" in t_clean:
+        h_target = 2160
+    elif "1080" in t_clean:
+        h_target = 1080
+    elif "720" in t_clean:
+        h_target = 720
+    elif "480" in t_clean:
+        h_target = 480
+    elif "360" in t_clean:
+        h_target = 360
 
     if not h_target:
         return master_url
@@ -801,16 +814,39 @@ async def _build_episode_caption_and_markup(
     )
 
     slug = series_slug or re.sub(r'[^a-zA-Z0-9]+', '-', s_title).strip('-').lower()
-    markup = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("480P ↗", url=f"https://t.me/{bname}?start=get_{slug}_480p_S{season_num}E{ep_num:02d}"),
-            InlineKeyboardButton("720P ↗", url=f"https://t.me/{bname}?start=get_{slug}_720p_S{season_num}E{ep_num:02d}"),
-        ],
-        [
-            InlineKeyboardButton("1080P ↗", url=f"https://t.me/{bname}?start=get_{slug}_1080p_S{season_num}E{ep_num:02d}"),
-            InlineKeyboardButton("HDRip ↗", url=f"https://t.me/{bname}?start=get_{slug}_auto_S{season_num}E{ep_num:02d}"),
-        ]
-    ])
+    from bot.database import db
+    from utils.helpers import encode_file_param
+
+    available_qualities = set()
+    if quality:
+        available_qualities.add(quality.upper())
+    if db:
+        ep_key = f"S{season_num:01d}E{ep_num:02d}"
+        try:
+            cached_docs = await db.files.find({"series_slug": slug, "episode_key": ep_key}).to_list(length=10)
+            for doc in cached_docs:
+                if doc.get("quality"):
+                    available_qualities.add(doc["quality"].upper())
+        except Exception:
+            pass
+
+    order = ["480P", "720P", "1080P", "1080P HQ", "4K", "HDRIP"]
+    sorted_q = sorted(available_qualities, key=lambda x: order.index(x) if x in order else 99)
+
+    button_rows = []
+    curr_row = []
+    for q_item in sorted_q:
+        q_code = q_item.lower().replace(" ", "")
+        param = encode_file_param(f"get_{slug}_{q_code}_S{season_num:01d}E{ep_num:02d}")
+        link = f"https://t.me/{bname}?start={param}"
+        curr_row.append(InlineKeyboardButton(f"{q_item} ↗", url=link))
+        if len(curr_row) == 2:
+            button_rows.append(curr_row)
+            curr_row = []
+    if curr_row:
+        button_rows.append(curr_row)
+
+    markup = InlineKeyboardMarkup(button_rows) if button_rows else None
     return caption, markup
 
 
@@ -1059,9 +1095,10 @@ async def download_and_upload(
             f"└ 🔄 Starting upload...",
             parse_mode=enums.ParseMode.HTML)
 
-        # Dump / Storage Channel (Point 4 - OFF by default unless configured)
+        # Dump / Storage Channel and Upload Mode
         from bot.database import db
         dump_channel_id = await db.get_dump_channel() if db else None
+        upload_mode = await db.get_upload_mode() if db else "video"
 
         # Build style-aware episode caption and quality buttons (Default: classic)
         caption_text, markup_obj = await _build_episode_caption_and_markup(
@@ -1069,59 +1106,125 @@ async def download_and_upload(
         )
 
         sent_msg = None
+        dump_msg = None
         if dump_channel_id and target_upload_chat != dump_channel_id:
             try:
                 await progress_msg.edit_text(
                     f"📤 <b>Uploading to Dump Channel</b>\n"
                     f"┌ 📺 {title}\n"
-                    f"├ 🎬 Quality: {quality}\n"
+                    f"├ 🎬 Quality: {quality} ({upload_mode.upper()})\n"
                     f"├ 💾 Size: {_format_size(file_size)}\n"
                     f"└ 🔄 Storing media in cache...",
                     parse_mode=enums.ParseMode.HTML)
-                dump_msg = await client.send_document(
-                    chat_id=dump_channel_id,
-                    document=output_path,
-                    thumb=thumb_path,
-                    file_name=filename,
-                    caption=f"📺 {title} [{quality}] #dump",
-                    progress=_upload_progress,
-                )
+                if upload_mode == "document":
+                    dump_msg = await client.send_document(
+                        chat_id=dump_channel_id,
+                        document=output_path,
+                        thumb=thumb_path,
+                        file_name=filename,
+                        caption=f"📺 {title} [{quality}] #dump",
+                        progress=_upload_progress,
+                        force_document=True,
+                    )
+                else:
+                    try:
+                        dump_msg = await client.send_video(
+                            chat_id=dump_channel_id,
+                            video=output_path,
+                            thumb=thumb_path,
+                            file_name=filename,
+                            caption=f"📺 {title} [{quality}] #dump",
+                            supports_streaming=True,
+                            progress=_upload_progress,
+                        )
+                    except Exception:
+                        dump_msg = await client.send_document(
+                            chat_id=dump_channel_id,
+                            document=output_path,
+                            thumb=thumb_path,
+                            file_name=filename,
+                            caption=f"📺 {title} [{quality}] #dump",
+                            progress=_upload_progress,
+                        )
                 if dump_msg:
                     fid = dump_msg.video.file_id if dump_msg.video else (dump_msg.document.file_id if dump_msg.document else None)
                     if fid:
-                        sent_msg = await client.send_document(
-                            chat_id=target_upload_chat,
-                            document=fid,
-                            caption=caption_text,
-                            reply_markup=markup_obj,
-                        )
+                        if upload_mode == "document":
+                            sent_msg = await client.send_document(
+                                chat_id=target_upload_chat,
+                                document=fid,
+                                caption=caption_text,
+                                reply_markup=markup_obj,
+                                force_document=True,
+                            )
+                        else:
+                            try:
+                                sent_msg = await client.send_video(
+                                    chat_id=target_upload_chat,
+                                    video=fid,
+                                    caption=caption_text,
+                                    reply_markup=markup_obj,
+                                    supports_streaming=True,
+                                )
+                            except Exception:
+                                sent_msg = await client.send_document(
+                                    chat_id=target_upload_chat,
+                                    document=fid,
+                                    caption=caption_text,
+                                    reply_markup=markup_obj,
+                                )
             except Exception as de:
                 log.warning("Dump channel upload failed, falling back to direct upload: %s", de)
 
         if not sent_msg:
-            try:
-                sent_msg = await client.send_document(
-                    chat_id=target_upload_chat,
-                    document=output_path,
-                    thumb=thumb_path,
-                    file_name=filename,
-                    caption=caption_text,
-                    reply_markup=markup_obj,
-                    progress=_upload_progress,
-                )
-            except Exception as te:
-                if thumb_path:
-                    log.warning("Upload with thumb failed, retrying without thumb: %s", te)
+            if upload_mode == "document":
+                try:
                     sent_msg = await client.send_document(
                         chat_id=target_upload_chat,
                         document=output_path,
+                        thumb=thumb_path,
+                        file_name=filename,
+                        caption=caption_text,
+                        reply_markup=markup_obj,
+                        progress=_upload_progress,
+                        force_document=True,
+                    )
+                except Exception as te:
+                    if thumb_path:
+                        log.warning("Upload with thumb failed, retrying without thumb: %s", te)
+                        sent_msg = await client.send_document(
+                            chat_id=target_upload_chat,
+                            document=output_path,
+                            file_name=filename,
+                            caption=caption_text,
+                            reply_markup=markup_obj,
+                            progress=_upload_progress,
+                            force_document=True,
+                        )
+                    else:
+                        raise
+            else:
+                try:
+                    sent_msg = await client.send_video(
+                        chat_id=target_upload_chat,
+                        video=output_path,
+                        thumb=thumb_path,
+                        file_name=filename,
+                        caption=caption_text,
+                        reply_markup=markup_obj,
+                        supports_streaming=True,
+                        progress=_upload_progress,
+                    )
+                except Exception:
+                    sent_msg = await client.send_document(
+                        chat_id=target_upload_chat,
+                        document=output_path,
+                        thumb=thumb_path,
                         file_name=filename,
                         caption=caption_text,
                         reply_markup=markup_obj,
                         progress=_upload_progress,
                     )
-                else:
-                    raise
 
         user_file_msg = None
         # If uploaded to dedicated channel and chat_id is user PM, send file to user via file_id
@@ -1129,11 +1232,27 @@ async def download_and_upload(
             try:
                 fid = sent_msg.video.file_id if sent_msg.video else (sent_msg.document.file_id if sent_msg.document else None)
                 if fid:
-                    user_file_msg = await client.send_document(
-                        chat_id=chat_id,
-                        document=fid,
-                        caption=f"📺 {title} [{quality}]",
-                    )
+                    if upload_mode == "document":
+                        user_file_msg = await client.send_document(
+                            chat_id=chat_id,
+                            document=fid,
+                            caption=f"📺 {title} [{quality}]",
+                            force_document=True,
+                        )
+                    else:
+                        try:
+                            user_file_msg = await client.send_video(
+                                chat_id=chat_id,
+                                video=fid,
+                                caption=f"📺 {title} [{quality}]",
+                                supports_streaming=True,
+                            )
+                        except Exception:
+                            user_file_msg = await client.send_document(
+                                chat_id=chat_id,
+                                document=fid,
+                                caption=f"📺 {title} [{quality}]",
+                            )
             except Exception as ue:
                 log.warning("Forward/send to user chat %d failed: %s", chat_id, ue)
         elif not destination_channel_id and chat_id > 0:
@@ -1143,9 +1262,14 @@ async def download_and_upload(
         if user_file_msg and chat_id > 0:
             try:
                 from bot.auto_delete import auto_delete_service
+                from utils.helpers import encode_file_param
                 bot_user = getattr(client, "me", None)
                 bname = bot_user.username if bot_user else ""
-                get_link = f"https://t.me/{bname}?start=help" if bname else ""
+                m_ep = re.search(r"S(\d+)E(\d+)", title, re.IGNORECASE)
+                ep_k = f"S{int(m_ep.group(1)):01d}E{int(m_ep.group(2)):02d}" if m_ep else ("movie" if is_movie else "all")
+                q_slug = quality.lower().replace(" ", "")
+                sec_param = encode_file_param(f"get_{series_slug}_{q_slug}_{ep_k}")
+                get_link = f"https://t.me/{bname}?start={sec_param}" if bname else ""
                 await auto_delete_service.schedule_deletion(
                     client=client,
                     chat_id=chat_id,
@@ -1153,6 +1277,22 @@ async def download_and_upload(
                     get_file_link=get_link,
                     file_title=title,
                 )
+
+                # Send auto-delete notification note (Issue #15)
+                dlt_seconds = await db.get_dlt_time() if db else 0
+                if dlt_seconds > 0:
+                    dlt_mins = max(1, round(dlt_seconds / 60))
+                    notice_text = (
+                        f"<blockquote>‣ <b>ɴᴏᴛᴇ:</b> ᴛʜɪs ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ɪɴ "
+                        f"<b>{dlt_mins} mins</b>. ꜰᴏʀᴡᴀʀᴅ ɪᴛ ᴛᴏ ʏᴏᴜʀ sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs ɴᴏᴡ..!</blockquote>"
+                    )
+                    notice_msg = await client.send_message(chat_id=chat_id, text=notice_text, parse_mode=enums.ParseMode.HTML)
+                    await auto_delete_service.schedule_deletion(
+                        client=client,
+                        chat_id=chat_id,
+                        message_id=notice_msg.id,
+                        custom_seconds=dlt_seconds,
+                    )
             except Exception as ade:
                 log.debug("Auto-delete scheduling in downloader failed: %s", ade)
 

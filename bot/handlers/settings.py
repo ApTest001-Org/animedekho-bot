@@ -177,6 +177,7 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
     custom_emoji = await db.get_enable_custom_emoji() if db else False
     thumb_template = await db.get_thumb_template() if db else "modern"
     random_thumb = await db.get_random_thumb_template() if db else False
+    upload_mode = await db.get_upload_mode() if db else "video"
 
     from config.settings import settings
     ai_enabled = settings.ai.enabled if settings and settings.ai else True
@@ -187,6 +188,9 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
 
     def _style_badge(style: str) -> str:
         return "Modern 🎨" if style == "modern" else "Classic 📜"
+
+    def _mode_badge(mode: str) -> str:
+        return "Video 🎬" if mode == "video" else "Document 📄"
 
     def _template_badge(tmpl: str, rand: bool) -> str:
         if rand:
@@ -217,6 +221,7 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
         "⚙️ <b>AnimeDekho Bot — Settings & Control Panel</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "Click the buttons below to toggle features and customize UI styles in real-time.\n\n"
+        f"• 📁 <b>Upload Mode:</b> <code>{_mode_badge(upload_mode)}</code> (Video / Document)\n"
         f"• 🔒 <b>FSub Timer Link:</b> <code>{_badge(fsub_mod)}</code> (2m Expire)\n"
         f"• ⏳ <b>File Auto-Delete:</b> <code>{_dlt_badge(dlt_time)}</code>\n"
         f"• ⭐ <b>Custom Emoji:</b> <code>{_badge(custom_emoji)}</code> (Premium Emojis)\n"
@@ -234,36 +239,39 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
 
     markup = InlineKeyboardMarkup([
         [
+            InlineKeyboardButton(f"📁 Mode: {_mode_badge(upload_mode)}", callback_data="set_toggle:upload_mode"),
             InlineKeyboardButton(f"⭐ Custom Emoji: {_badge(custom_emoji)}", callback_data="set_toggle:custom_emoji"),
+        ],
+        [
             InlineKeyboardButton(f"🖼️ Style: {_template_badge(thumb_template, random_thumb)}", callback_data="set_toggle:thumb_template"),
-        ],
-        [
             InlineKeyboardButton(f"🎲 Random Thumb: {_badge(random_thumb)}", callback_data="set_toggle:random_thumb"),
+        ],
+        [
             InlineKeyboardButton(f"🖼️ AutoThumb: {_badge(auto_thumb)}", callback_data="set_toggle:auto_thumb"),
-        ],
-        [
             InlineKeyboardButton(f"🔒 FSub: {_badge(fsub_mod)}", callback_data="set_toggle:fsub_mod"),
+        ],
+        [
             InlineKeyboardButton(f"⏳ Delete: {_dlt_badge(dlt_time)}", callback_data="set_toggle:dlt_time"),
-        ],
-        [
             InlineKeyboardButton(f"🎨 Start: {_style_badge(start_style)}", callback_data="set_toggle:start_style"),
+        ],
+        [
             InlineKeyboardButton(f"📅 Sched: {_style_badge(sched_style)}", callback_data="set_toggle:sched_style"),
-        ],
-        [
             InlineKeyboardButton(f"📺 Ep: {_style_badge(ep_style)}", callback_data="set_toggle:ep_style"),
+        ],
+        [
             InlineKeyboardButton(f"🖼️ Post: {_style_badge(post_style)}", callback_data="set_toggle:post_style"),
-        ],
-        [
             InlineKeyboardButton(f"🔍 AutoSearch: {_badge(auto_search)}", callback_data="set_toggle:auto_search"),
-            InlineKeyboardButton(f"⏰ 12 AM Post: {_badge(auto_sched)}", callback_data="set_toggle:auto_sched"),
         ],
         [
+            InlineKeyboardButton(f"⏰ 12 AM Post: {_badge(auto_sched)}", callback_data="set_toggle:auto_sched"),
             InlineKeyboardButton(f"🤖 AI Agent: {_badge(ai_enabled)}", callback_data="set_toggle:ai_enabled"),
+        ],
+        [
             InlineKeyboardButton("🔄 Refresh", callback_data="set_toggle:refresh"),
+            InlineKeyboardButton("❌ Close Panel", callback_data="settings_action:close"),
         ],
         [
             InlineKeyboardButton("📖 Open /commands Guide", callback_data="cmd_cat:home"),
-            InlineKeyboardButton("❌ Close Panel", callback_data="settings_action:close"),
         ],
     ])
 
@@ -413,6 +421,12 @@ async def settings_callback(client: Client, query: CallbackQuery):
         object.__setattr__(settings.ai, "enabled", new_ai)
         await db.set_config("ai_enabled", "on" if new_ai else "off")
         alert_msg = f"AI Agent: {'ENABLED' if new_ai else 'DISABLED'}"
+
+    elif data == "set_toggle:upload_mode":
+        cur_mode = await db.get_upload_mode()
+        new_mode = "document" if cur_mode == "video" else "video"
+        await db.set_upload_mode(new_mode)
+        alert_msg = f"Upload Mode: {new_mode.upper()} ({'Document 📄' if new_mode == 'document' else 'Video 🎬'})"
 
     # Render updated UI
     text, markup = await _render_settings_panel(db)

@@ -29,11 +29,28 @@ async def async_main():
     await app.stop()
 
 def main():
+    if sys.platform == "win32":
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except Exception:
+            pass
+
     logging.basicConfig(
         level=getattr(logging, settings.bot.log_level.upper(), logging.INFO),
         format="%(asctime)s | %(name)-20s | %(levelname)-7s | %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    # Filter routine 1-2s internal SaveBigFilePart floodwait warnings (Issue #7)
+    class UploadFloodWaitFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            if "SaveBigFilePart" in msg and ("Waiting for 1" in msg or "Waiting for 2" in msg):
+                return False
+            return True
+
+    logging.getLogger("pyrogram.session.session").addFilter(UploadFloodWaitFilter())
+    logging.getLogger("wzgram.session.session").addFilter(UploadFloodWaitFilter())
 
     log = logging.getLogger("animedekho")
     log.info("Starting AnimeDekho Bot (WZGram/MTProto)...")

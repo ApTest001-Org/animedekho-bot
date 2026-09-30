@@ -51,6 +51,9 @@ query ($airingAt_greater: Int, $airingAt_lesser: Int, $page: Int, $perPage: Int)
         episodes
         duration
         averageScore
+        popularity
+        format
+        isAdult
         countryOfOrigin
       }
     }
@@ -93,6 +96,28 @@ class ScheduleService:
             },
         }
 
+        def _filter_schedules(raw_list: list[dict]) -> list[dict]:
+            filtered = []
+            for item in raw_list:
+                media = item.get("media") or {}
+                if media.get("isAdult"):
+                    continue
+                fmt = media.get("format")
+                if fmt in ("MUSIC", "SPECIAL"):
+                    continue
+                country = media.get("countryOfOrigin")
+                pop = media.get("popularity") or 0
+                score = media.get("averageScore") or 0
+                # Filter out obscure Chinese micro-donghua (non-Japanese releases with low popularity/score)
+                if country == "CN" and pop < 1500 and score < 70:
+                    continue
+                # Filter out micro shorts with low audience
+                dur = media.get("duration") or 0
+                if dur > 0 and dur <= 6 and pop < 1000:
+                    continue
+                filtered.append(item)
+            return filtered
+
         try:
             from utils.http import http_client
             # If http_client is available, use it, else aiohttp
@@ -105,7 +130,8 @@ class ScheduleService:
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        schedules = data.get("data", {}).get("Page", {}).get("airingSchedules", [])
+                        raw_sched = data.get("data", {}).get("Page", {}).get("airingSchedules", [])
+                        schedules = _filter_schedules(raw_sched)
                         self._cache[cache_key] = (now, schedules)
                         return schedules
             else:
@@ -119,7 +145,8 @@ class ScheduleService:
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            schedules = data.get("data", {}).get("Page", {}).get("airingSchedules", [])
+                            raw_sched = data.get("data", {}).get("Page", {}).get("airingSchedules", [])
+                            schedules = _filter_schedules(raw_sched)
                             self._cache[cache_key] = (now, schedules)
                             return schedules
         except Exception as e:
@@ -281,16 +308,20 @@ class AutoScheduleService:
                 if db and client:
                     enabled = await db.get_auto_schedule_post()
                     main_chan = settings.bot.main_channel
+                    if not main_chan:
+                        main_chan = await db.get_main_channel()
 
                     if enabled and main_chan:
                         now_ist = datetime.now(ist)
                         today_str = now_ist.strftime("%Y-%m-%d")
+                        last_posted = await db.get_config("last_sched_post_date", default="")
 
-                        if now_ist.hour == 0 and now_ist.minute <= 5 and self._last_posted_date != today_str:
+                        if now_ist.hour == 0 and last_posted != today_str and self._last_posted_date != today_str:
                             log.info("AutoScheduleService: Triggering 12:00 AM IST daily schedule post for %s", main_chan)
-                            ok = await self.post_daily_schedule(client, main_chan)
+                            ok = await self.post_daily_schedule(client, int(main_chan))
                             if ok:
                                 self._last_posted_date = today_str
+                                await db.set_config("last_sched_post_date", today_str)
 
             except Exception as e:
                 log.warning("AutoScheduleService loop error: %s", e)
@@ -301,7 +332,12 @@ class AutoScheduleService:
         """Fetch today's schedule and post/update it in the channel."""
         try:
             from bot.database import db
-            from bot.handlers.schedule import _format_modern_schedule_text, _format_classic_schedule_text, _build_modern_schedule_markup, _build_schedule_menu_markup
+            from bot.handlers.schedule import (
+                _format_modern_schedule_text,
+                _format_schedule_text,
+                _build_modern_schedule_markup,
+                _build_schedule_menu_markup,
+            )
 
             schedules = await schedule_service.get_today_schedule()
             sched_style = await db.get_sched_style() if db else "classic"
@@ -310,7 +346,7 @@ class AutoScheduleService:
                 text, total_pages = _format_modern_schedule_text(schedules, "today", 1)
                 markup = _build_modern_schedule_markup("today", 1, total_pages)
             else:
-                text, total_pages = _format_classic_schedule_text(schedules, "today", 1)
+                text, total_pages = _format_schedule_text(schedules, "today", 1)
                 markup = _build_schedule_menu_markup("today", 1, total_pages)
 
             await client.send_message(

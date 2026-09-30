@@ -242,7 +242,9 @@ class ChildBotManager:
 
             args = m.text.split(maxsplit=1)
             if len(args) > 1:
-                param = args[1]
+                raw_arg = args[1].strip()
+                from utils.helpers import decode_file_param
+                param = decode_file_param(raw_arg)
                 if param.startswith("get_"):
                     await self._handle_child_file_request(c, m, param, doc)
                     return
@@ -446,6 +448,8 @@ class ChildBotManager:
             status_msg = await message.reply_text(f"⚡ <b>Worker @{bot_doc['username']}:</b> Delivering {len(all_files)} episode(s)...", parse_mode=enums.ParseMode.HTML)
             delivered = 0
 
+            from utils.helpers import encode_file_param
+
             for f in all_files:
                 ep_key = f.get("episode_key", "")
                 q_label = f.get("quality", quality)
@@ -454,7 +458,8 @@ class ChildBotManager:
                 sent_msg = await self._send_single_file(client, message.chat.id, f, caption)
                 if sent_msg:
                     delivered += 1
-                    get_file_link = f"https://t.me/{bot_doc['username']}?start={param}"
+                    sec_param = encode_file_param(f"get_{series_slug}_{quality}_{ep_key}")
+                    get_file_link = f"https://t.me/{bot_doc['username']}?start={sec_param}"
                     await auto_delete_service.schedule_deletion(
                         client=client,
                         chat_id=message.chat.id,
@@ -466,6 +471,22 @@ class ChildBotManager:
 
             await status_msg.edit_text(f"✅ <b>Delivered {delivered}/{len(all_files)} episode(s)</b> via @{bot_doc['username']}!", parse_mode=enums.ParseMode.HTML)
             await db.increment_child_bot_stats(bot_doc["bot_id"])
+
+            # Send auto-delete notification note (Issue #15)
+            dlt_seconds = await db.get_dlt_time() if db else 0
+            if dlt_seconds > 0:
+                dlt_mins = max(1, round(dlt_seconds / 60))
+                notice_text = (
+                    f"<blockquote>‣ <b>ɴᴏᴛᴇ:</b> ᴛʜɪs ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ɪɴ "
+                    f"<b>{dlt_mins} mins</b>. ꜰᴏʀᴡᴀʀᴅ ɪᴛ ᴛᴏ ʏᴏᴜʀ sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs ɴᴏᴡ..!</blockquote>"
+                )
+                notice_msg = await message.reply_text(notice_text, parse_mode=enums.ParseMode.HTML)
+                await auto_delete_service.schedule_deletion(
+                    client=client,
+                    chat_id=message.chat.id,
+                    message_id=notice_msg.id,
+                    custom_seconds=dlt_seconds,
+                )
             return
 
         # Single episode or movie
@@ -487,7 +508,9 @@ class ChildBotManager:
         sent_msg = await self._send_single_file(client, message.chat.id, cached_file, caption)
         if sent_msg:
             await db.increment_child_bot_stats(bot_doc["bot_id"])
-            get_file_link = f"https://t.me/{bot_doc['username']}?start={param}"
+            from utils.helpers import encode_file_param
+            sec_param = encode_file_param(param)
+            get_file_link = f"https://t.me/{bot_doc['username']}?start={sec_param}"
             await auto_delete_service.schedule_deletion(
                 client=client,
                 chat_id=message.chat.id,
@@ -495,6 +518,22 @@ class ChildBotManager:
                 get_file_link=get_file_link,
                 file_title=title,
             )
+
+            # Send auto-delete notification note (Issue #15)
+            dlt_seconds = await db.get_dlt_time() if db else 0
+            if dlt_seconds > 0:
+                dlt_mins = max(1, round(dlt_seconds / 60))
+                notice_text = (
+                    f"<blockquote>‣ <b>ɴᴏᴛᴇ:</b> ᴛʜɪs ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ɪɴ "
+                    f"<b>{dlt_mins} mins</b>. ꜰᴏʀᴡᴀʀᴅ ɪᴛ ᴛᴏ ʏᴏᴜʀ sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs ɴᴏᴡ..!</blockquote>"
+                )
+                notice_msg = await message.reply_text(notice_text, parse_mode=enums.ParseMode.HTML)
+                await auto_delete_service.schedule_deletion(
+                    client=client,
+                    chat_id=message.chat.id,
+                    message_id=notice_msg.id,
+                    custom_seconds=dlt_seconds,
+                )
         else:
             await message.reply_text("⚠️ Could not deliver file. Please try again or download via our main bot.")
 
@@ -504,10 +543,13 @@ class ChildBotManager:
         """
         Deliver a single file to user with fallback cascade:
         1. Copy from storage/main channel (instant & works across all bots).
-        2. Send document/video using file_id via child client.
+        2. Send document/video using file_id via child client according to upload_mode.
         3. Fallback to main client sending/copying directly.
         Returns the sent Message or None.
         """
+        from bot.database import db
+        upload_mode = await db.get_upload_mode() if db else "video"
+
         storage_cid = file_doc.get("storage_channel_id")
         storage_mid = file_doc.get("storage_message_id")
         file_id = file_doc.get("file_id")
@@ -526,17 +568,9 @@ class ChildBotManager:
             except Exception as e:
                 log.debug("copy_message from storage channel failed: %s", e)
 
-        # 2. Try sending directly with file_id
+        # 2. Try sending directly with file_id according to upload_mode
         if file_id:
-            try:
-                msg = await child_client.send_video(
-                    chat_id=chat_id,
-                    video=file_id,
-                    caption=caption,
-                    parse_mode=enums.ParseMode.HTML,
-                )
-                return msg
-            except Exception:
+            if upload_mode == "document":
                 try:
                     msg = await child_client.send_document(
                         chat_id=chat_id,
@@ -545,18 +579,63 @@ class ChildBotManager:
                         parse_mode=enums.ParseMode.HTML,
                     )
                     return msg
-                except Exception as e2:
-                    log.debug("Child bot direct send file_id failed: %s", e2)
+                except Exception:
+                    try:
+                        msg = await child_client.send_video(
+                            chat_id=chat_id,
+                            video=file_id,
+                            caption=caption,
+                            parse_mode=enums.ParseMode.HTML,
+                        )
+                        return msg
+                    except Exception as e2:
+                        log.debug("Child bot direct send file_id failed: %s", e2)
+            else:
+                try:
+                    msg = await child_client.send_video(
+                        chat_id=chat_id,
+                        video=file_id,
+                        caption=caption,
+                        parse_mode=enums.ParseMode.HTML,
+                    )
+                    return msg
+                except Exception:
+                    try:
+                        msg = await child_client.send_document(
+                            chat_id=chat_id,
+                            document=file_id,
+                            caption=caption,
+                            parse_mode=enums.ParseMode.HTML,
+                        )
+                        return msg
+                    except Exception as e2:
+                        log.debug("Child bot direct send file_id failed: %s", e2)
 
         # 3. Fallback: Main Bot client delivers on behalf of child bot
         if self.main_client and file_id:
             try:
-                msg = await self.main_client.send_document(
-                    chat_id=chat_id,
-                    document=file_id,
-                    caption=caption,
-                    parse_mode=enums.ParseMode.HTML,
-                )
+                if upload_mode == "document":
+                    msg = await self.main_client.send_document(
+                        chat_id=chat_id,
+                        document=file_id,
+                        caption=caption,
+                        parse_mode=enums.ParseMode.HTML,
+                    )
+                else:
+                    try:
+                        msg = await self.main_client.send_video(
+                            chat_id=chat_id,
+                            video=file_id,
+                            caption=caption,
+                            parse_mode=enums.ParseMode.HTML,
+                        )
+                    except Exception:
+                        msg = await self.main_client.send_document(
+                            chat_id=chat_id,
+                            document=file_id,
+                            caption=caption,
+                            parse_mode=enums.ParseMode.HTML,
+                        )
                 return msg
             except Exception as e3:
                 log.warning("Main client fallback send failed: %s", e3)

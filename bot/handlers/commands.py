@@ -13,7 +13,6 @@ import bot.logger
 log = logging.getLogger(__name__)
 
 
-@require_approved
 async def cmd_start(client: Client, message: Message):
     user = message.from_user
     user_id = user.id if user else 0
@@ -28,7 +27,9 @@ async def cmd_start(client: Client, message: Message):
     # Check for deep link parameters (file requests from library or channel join)
     args = message.text.split(maxsplit=1)
     if len(args) > 1:
-        param = args[1]
+        raw_arg = args[1].strip()
+        from utils.helpers import decode_file_param
+        param = decode_file_param(raw_arg)
         if param.startswith("get_"):
             await _handle_file_request(client, message, param)
             return
@@ -432,6 +433,8 @@ async def _handle_file_request(client: Client, message: Message, param: str):
 
         status_msg = await message.reply_text(f"📤 Sending {len(all_files)} episodes...")
         from bot.auto_delete import auto_delete_service
+        from utils.helpers import encode_file_param
+        upload_mode = await db.get_upload_mode() if db else "video"
 
         for f in all_files:
             ep_key = f["episode_key"]
@@ -439,25 +442,51 @@ async def _handle_file_request(client: Client, message: Message, param: str):
             q_label = f.get("quality", quality)
             caption = f"📺 {htmlmod.escape(title)} [{q_label}] — {ep_key}"
             sent_msg = None
-            try:
-                sent_msg = await message.reply_video(video=file_id, caption=caption, parse_mode=enums.ParseMode.HTML)
-            except Exception:
+            if upload_mode == "document":
                 try:
                     sent_msg = await message.reply_document(document=file_id, caption=caption, parse_mode=enums.ParseMode.HTML)
-                except Exception as e:
-                    log.error("Failed to send %s: %s", ep_key, e)
+                except Exception:
+                    try:
+                        sent_msg = await message.reply_video(video=file_id, caption=caption, parse_mode=enums.ParseMode.HTML)
+                    except Exception as e:
+                        log.error("Failed to send %s: %s", ep_key, e)
+            else:
+                try:
+                    sent_msg = await message.reply_video(video=file_id, caption=caption, parse_mode=enums.ParseMode.HTML)
+                except Exception:
+                    try:
+                        sent_msg = await message.reply_document(document=file_id, caption=caption, parse_mode=enums.ParseMode.HTML)
+                    except Exception as e:
+                        log.error("Failed to send %s: %s", ep_key, e)
 
             if sent_msg:
+                sec_param = encode_file_param(f"get_{series_slug}_{quality}_{ep_key}")
                 await auto_delete_service.schedule_deletion(
                     client=client,
                     chat_id=message.chat.id,
                     message_id=sent_msg.id,
-                    get_file_link=f"https://t.me/{b_name}?start={param}",
+                    get_file_link=f"https://t.me/{b_name}?start={sec_param}",
                     file_title=title,
                 )
             await asyncio.sleep(0.4)
 
         await status_msg.delete()
+
+        # Send auto-delete notification note (Issue #15)
+        dlt_seconds = await db.get_dlt_time() if db else 0
+        if dlt_seconds > 0:
+            dlt_mins = max(1, round(dlt_seconds / 60))
+            notice_text = (
+                f"<blockquote>‣ <b>ɴᴏᴛᴇ:</b> ᴛʜɪs ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ɪɴ "
+                f"<b>{dlt_mins} mins</b>. ꜰᴏʀᴡᴀʀᴅ ɪᴛ ᴛᴏ ʏᴏᴜʀ sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs ɴᴏᴡ..!</blockquote>"
+            )
+            notice_msg = await message.reply_text(notice_text, parse_mode=enums.ParseMode.HTML)
+            await auto_delete_service.schedule_deletion(
+                client=client,
+                chat_id=message.chat.id,
+                message_id=notice_msg.id,
+                custom_seconds=dlt_seconds,
+            )
         return
 
     # Normal single-file logic
@@ -471,24 +500,40 @@ async def _handle_file_request(client: Client, message: Message, param: str):
     sent_msg = None
     try:
         from bot.emojis import get_emoji
+        from utils.helpers import encode_file_param
+        upload_mode = await db.get_upload_mode() if db else "video"
         is_mov = bool(episode_key.lower() == "movie")
         media_icon = get_emoji("movie", "🎬") if is_mov else get_emoji("tv", "📺")
         caption = f"{media_icon} {htmlmod.escape(title)} [{quality}]"
         if not is_mov:
             caption += f" — {episode_key}"
 
-        try:
-            sent_msg = await message.reply_video(
-                video=file_id,
-                caption=caption,
-                parse_mode=enums.ParseMode.HTML,
-            )
-        except Exception:
-            sent_msg = await message.reply_document(
-                document=file_id,
-                caption=caption,
-                parse_mode=enums.ParseMode.HTML,
-            )
+        if upload_mode == "document":
+            try:
+                sent_msg = await message.reply_document(
+                    document=file_id,
+                    caption=caption,
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            except Exception:
+                sent_msg = await message.reply_video(
+                    video=file_id,
+                    caption=caption,
+                    parse_mode=enums.ParseMode.HTML,
+                )
+        else:
+            try:
+                sent_msg = await message.reply_video(
+                    video=file_id,
+                    caption=caption,
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            except Exception:
+                sent_msg = await message.reply_document(
+                    document=file_id,
+                    caption=caption,
+                    parse_mode=enums.ParseMode.HTML,
+                )
 
         # Log download
         if db and user:
@@ -503,13 +548,30 @@ async def _handle_file_request(client: Client, message: Message, param: str):
         # Auto-delete scheduling
         if sent_msg:
             from bot.auto_delete import auto_delete_service
+            sec_param = encode_file_param(param)
             await auto_delete_service.schedule_deletion(
                 client=client,
                 chat_id=message.chat.id,
                 message_id=sent_msg.id,
-                get_file_link=f"https://t.me/{b_name}?start={param}",
+                get_file_link=f"https://t.me/{b_name}?start={sec_param}",
                 file_title=title,
             )
+
+            # Send auto-delete notification note (Issue #15)
+            dlt_seconds = await db.get_dlt_time() if db else 0
+            if dlt_seconds > 0:
+                dlt_mins = max(1, round(dlt_seconds / 60))
+                notice_text = (
+                    f"<blockquote>‣ <b>ɴᴏᴛᴇ:</b> ᴛʜɪs ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ɪɴ "
+                    f"<b>{dlt_mins} mins</b>. ꜰᴏʀᴡᴀʀᴅ ɪᴛ ᴛᴏ ʏᴏᴜʀ sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs ɴᴏᴡ..!</blockquote>"
+                )
+                notice_msg = await message.reply_text(notice_text, parse_mode=enums.ParseMode.HTML)
+                await auto_delete_service.schedule_deletion(
+                    client=client,
+                    chat_id=message.chat.id,
+                    message_id=notice_msg.id,
+                    custom_seconds=dlt_seconds,
+                )
 
     except Exception as e:
         log.error("Failed to send library file: %s", e)
