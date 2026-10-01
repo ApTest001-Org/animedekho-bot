@@ -217,34 +217,53 @@ class ScheduleService:
 
 
     async def get_today_schedule(self) -> list[dict]:
-        """Get anime schedule for today (UTC/IST midnight to midnight)."""
+        """Get anime schedule for today, prioritizing real Hindi Dubbed anime releases."""
+        # 1. Fetch real Hindi Dub schedule from AnimeDubHindi
+        hindi_sched = await self.fetch_animedubhindi_schedule()
+        ist = timezone(timedelta(hours=5, minutes=30))
+        today_day = datetime.now(ist).strftime("%A").lower()
+
+        today_hindi = []
+        for s in hindi_sched:
+            d = s.get("day", "").strip().lower()
+            if d == today_day or "daily" in d or "today" in d:
+                today_hindi.append(s)
+
+        # 2. Fetch popular Japanese releases from AniList for broader schedule coverage
         now = int(time.time())
-        # Align with start of day in UTC
         start_of_day = now - (now % 86400)
         end_of_day = start_of_day + 86400
-        return await self.fetch_schedule(start_of_day, end_of_day, per_page=30)
+        anilist_sched = await self.fetch_schedule(start_of_day, end_of_day, per_page=20)
+
+        # Put Hindi Dub releases first!
+        return today_hindi + anilist_sched
 
     async def get_day_schedule(self, day_index: int) -> list[dict]:
-        """
-        Get anime schedule for a specific day of the current week.
-        day_index: 0=Monday, 6=Sunday.
-        """
-        now_dt = datetime.now(timezone.utc)
-        current_weekday = now_dt.weekday()  # 0=Monday
-        days_diff = day_index - current_weekday
+        """Get anime schedule for a specific day of the week, prioritizing Hindi releases."""
+        target_day_name = DAY_NAMES[day_index].lower() if 0 <= day_index < 7 else ""
+        hindi_sched = await self.fetch_animedubhindi_schedule()
+        day_hindi = [
+            s for s in hindi_sched
+            if s.get("day", "").strip().lower() == target_day_name or "daily" in s.get("day", "").strip().lower()
+        ]
 
-        target_dt = (now_dt + timedelta(days=days_diff)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        now_dt = datetime.now(timezone.utc)
+        current_weekday = now_dt.weekday()
+        days_diff = day_index - current_weekday
+        target_dt = (now_dt + timedelta(days=days_diff)).replace(hour=0, minute=0, second=0, microsecond=0)
         start_ts = int(target_dt.timestamp())
         end_ts = start_ts + 86400
-        return await self.fetch_schedule(start_ts, end_ts, per_page=30)
+        anilist_sched = await self.fetch_schedule(start_ts, end_ts, per_page=20)
+
+        return day_hindi + anilist_sched
 
     async def get_upcoming_schedule(self, days: int = 30) -> list[dict]:
-        """Get anime schedule airing in the next N days (default 30 days = 1 month)."""
+        """Get upcoming anime schedule, including upcoming Hindi dub schedule."""
+        hindi_sched = await self.fetch_animedubhindi_schedule()
         now = int(time.time())
         end_ts = now + (days * 86400)
-        return await self.fetch_schedule(now, end_ts, per_page=50)
+        anilist_sched = await self.fetch_schedule(now, end_ts, per_page=30)
+        return hindi_sched + anilist_sched
 
     @staticmethod
     def format_countdown(target_ts: int) -> str:

@@ -224,7 +224,7 @@ class ChildBotManager:
             cmd_stats, cmd_users_count, cmd_ban, cmd_unban,
             cmd_broadcast, cmd_pbroadcast, cmd_dbroadcast,
             cmd_fsub, cmd_fsub_mod, cmd_dlt_time, cmd_tutorial,
-            dlt_time_callback, toggle_fsub_mod_callback,
+            dlt_time_callback, toggle_fsub_mod_callback, tutorial_callback,
         )
         from bot.auto_delete import handle_close_dlt_notice
 
@@ -254,12 +254,14 @@ class ChildBotManager:
                         mapping = await db.get_channel_mapping(slug)
                         if mapping and mapping.get("channel_id"):
                             from bot.fsub import check_fsub, create_timer_invite_link
-                            is_sub, f_text, f_markup = await check_fsub(c, user_id, retry_param=param)
+                            from utils.helpers import encode_file_param
+                            sec_retry = encode_file_param(f"join_{slug}")
+                            is_sub, f_text, f_markup = await check_fsub(c, user_id, retry_param=sec_retry)
                             if not is_sub:
                                 await m.reply_text(f_text, parse_mode=enums.ParseMode.HTML, reply_markup=f_markup)
                                 return
 
-                            retry_url = f"https://t.me/{username}?start={param}"
+                            retry_url = f"https://t.me/{username}?start={sec_retry}"
                             t_link = await create_timer_invite_link(c, mapping["channel_id"], expire_seconds=120, name=f"Join {slug[:15]}")
                             if not t_link:
                                 retry_btn = [InlineKeyboardButton("🔄 Try Again", url=retry_url)]
@@ -371,6 +373,7 @@ class ChildBotManager:
         # Attach callbacks on child bot
         client.on_callback_query(filters.regex(r"^dlt:"))(dlt_time_callback)
         client.on_callback_query(filters.regex(r"^toggle_fsub_mod"))(toggle_fsub_mod_callback)
+        client.on_callback_query(filters.regex(r"^tutorial:"))(tutorial_callback)
         client.on_callback_query(filters.regex(r"^close_dlt_notice"))(handle_close_dlt_notice)
 
         try:

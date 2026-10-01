@@ -20,7 +20,7 @@ from .worker_admin import (
     cmd_stats, cmd_users_count, cmd_ban, cmd_unban,
     cmd_broadcast, cmd_pbroadcast, cmd_dbroadcast,
     cmd_fsub, cmd_fsub_mod, cmd_dlt_time, cmd_tutorial,
-    dlt_time_callback, toggle_fsub_mod_callback,
+    dlt_time_callback, toggle_fsub_mod_callback, tutorial_callback,
 )
 from .schedule import cmd_schedule, schedule_callback
 from .settings import cmd_commands, commands_callback, cmd_settings, settings_callback
@@ -132,6 +132,7 @@ def register_handlers(app: Client):
     app.add_handler(CallbackQueryHandler(delete_callback, filters.regex(r"^del:")))
     app.add_handler(CallbackQueryHandler(dlt_time_callback, filters.regex(r"^dlt:\d+$")))
     app.add_handler(CallbackQueryHandler(toggle_fsub_mod_callback, filters.regex(r"^toggle_fsub_mod$")))
+    app.add_handler(CallbackQueryHandler(tutorial_callback, filters.regex(r"^tutorial:")))
     app.add_handler(CallbackQueryHandler(handle_close_dlt_notice, filters.regex(r"^close_dlt_notice$")))
     app.add_handler(CallbackQueryHandler(schedule_callback, filters.regex(r"^sch:")))
 

@@ -303,19 +303,67 @@ Installs Docker, asks for your credentials interactively, builds the image and l
 </details>
 
 <details>
-<summary><b>🖥️ &nbsp;Bare-metal VPS</b></summary>
+<summary><b>💻 &nbsp;Local PC &amp; Bare-metal VPS Setup Guide (Windows / Linux / macOS)</b></summary>
 <br>
 
+#### 1. System Requirements & Prerequisites
+- **Python:** `3.10`, `3.11`, `3.12` (compatible with `3.14`)
+- **FFmpeg:** Required on system `PATH` for video remuxing and audio track preservation
+- **N_m3u8DL-RE:** *(Recommended)* For fast multi-threaded multi-audio HLS/DASH downloads
+- **MongoDB:** MongoDB Atlas free tier URI or local instance (v5.0+)
+- **Telegram App Credentials:** `API_ID` &amp; `API_HASH` from [my.telegram.org](https://my.telegram.org), plus `BOT_TOKEN` from [@BotFather](https://t.me/BotFather)
+
+#### 2. Step-by-Step Installation
+
 ```bash
+# 1. Clone the repository
 git clone https://github.com/jrodr254/animedekho-bot.git
 cd animedekho-bot
-python3 -m venv venv && source venv/bin/activate
+
+# 2. Create and activate a virtual environment
+python3 -m venv venv
+
+# On Linux / macOS:
+source venv/bin/activate
+
+# On Windows (PowerShell / Command Prompt):
+venv\Scripts\activate
+
+# 3. Upgrade pip and install dependencies
+pip install --upgrade pip
 pip install -r requirements.txt
-cp .env.example .env        # fill in your values
+
+# 4. Install FFmpeg
+# On Ubuntu / Debian:
+sudo apt update && sudo apt install -y ffmpeg
+
+# On macOS (Homebrew):
+brew install ffmpeg
+
+# On Windows (winget):
+winget install Gyan.FFmpeg
+
+# Verify FFmpeg is available on PATH:
+ffmpeg -version
+
+# 5. Configure environment variables
+cp .env.example .env
+# Edit .env and enter your credentials:
+# BOT_TOKEN, API_ID, API_HASH, OWNER_ID, MONGO_URI, MAIN_CHANNEL
+
+# 6. Run the bot
 python main.py
 ```
 
-> Needs `ffmpeg` and the `N_m3u8DL-RE` binary on PATH for the download engine (the Docker image handles both for you).
+#### 3. Common Errors & Troubleshooting
+
+| Error | Root Cause | Solution |
+|---|---|---|
+| `FFmpeg not found in PATH` | FFmpeg executable not in system environment variables | Verify with `ffmpeg -version`. If installed manually on Windows, add its `bin/` folder to your User/System `Path` and restart terminal. |
+| `ServerSelectionTimeoutError` | MongoDB connection timed out / blocked | In MongoDB Atlas, navigate to **Network Access** &rarr; **Add IP Address** &rarr; select **Allow Access from Anywhere (`0.0.0.0/0`)**. Verify your username and password in `MONGO_URI`. |
+| `Telegram API FLOOD_WAIT` | Rate limit imposed by Telegram servers | The bot has built-in exponential backoff. Wait out the cooldown period; avoid bulk-spamming buttons rapidly. |
+| `Audio missing / dropped in download` | Stream has separate audio tracks | Ensure FFmpeg 5.0+ is installed (`-map 0:a?` copies all tracks). For HLS multi-audio, ensure `N_m3u8DL-RE` is installed. |
+| `ModuleNotFoundError` | Dependencies installed in different environment | Ensure your virtual environment is active (`(venv)` indicator in terminal) before running `pip install -r requirements.txt`. |
 
 </details>
 

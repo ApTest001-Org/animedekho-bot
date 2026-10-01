@@ -149,7 +149,8 @@ class LibraryManager:
             notif_buttons = []
             mapping = await self.db.get_channel_mapping(series_slug, title=series_title) if self.db else None
             if mapping and mapping.get("channel_id"):
-                join_link = f"https://t.me/{self.bot_username}?start=join_{series_slug}"
+                sec_join = encode_file_param(f"join_{series_slug}")
+                join_link = f"https://t.me/{self.bot_username}?start={sec_join}"
                 notif_buttons.append([InlineKeyboardButton("🚀 Open Channel", url=join_link)])
             notif_buttons.append([InlineKeyboardButton("📥 Get File", url=file_link)])
             notif_markup = InlineKeyboardMarkup(notif_buttons)
@@ -600,7 +601,9 @@ class LibraryManager:
         quality_str = " | ".join(qualities) if qualities else "480p | 720p | 1080p"
 
         slug = series_slug or (channel_mapping.get("series_slug", "") if channel_mapping else "")
-        join_deep = f"https://t.me/{self.bot_username}?start=join_{slug}" if slug else ""
+        from utils.helpers import encode_file_param
+        sec_slug = encode_file_param(f"join_{slug}") if slug else ""
+        join_deep = f"https://t.me/{self.bot_username}?start={sec_slug}" if sec_slug else ""
 
         if is_movie:
             # Issue #12 Point 10: Main Library Movie Post with Telegram Premium Custom Emojis
@@ -731,7 +734,9 @@ class LibraryManager:
         buttons = []
 
         slug_for_join = series_slug or (channel_mapping.get("series_slug", "") if channel_mapping else "")
-        join_deep = f"https://t.me/{self.bot_username}?start=join_{slug_for_join or series_slug}"
+        from utils.helpers import encode_file_param
+        sec_join = encode_file_param(f"join_{slug_for_join or series_slug}")
+        join_deep = f"https://t.me/{self.bot_username}?start={sec_join}"
         download_btn = InlineKeyboardButton("DOWNLOAD", url=join_deep)
 
         network_link = (

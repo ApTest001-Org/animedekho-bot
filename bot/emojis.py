@@ -43,8 +43,21 @@ EMOJI_REGISTRY: Dict[str, Tuple[str, str]] = {
 }
 
 
+_CUSTOM_EMOJI_RUNTIME: bool | None = None
+
+
+def set_custom_emoji_runtime_state(enabled: bool) -> None:
+    """Set custom emoji runtime state dynamically from DB/Settings."""
+    global _CUSTOM_EMOJI_RUNTIME
+    _CUSTOM_EMOJI_RUNTIME = bool(enabled)
+
+
 def is_custom_emoji_enabled() -> bool:
-    """Check if custom emoji rendering is enabled in config or environment."""
+    """Check if custom emoji rendering is enabled in runtime state, config or environment."""
+    global _CUSTOM_EMOJI_RUNTIME
+    if _CUSTOM_EMOJI_RUNTIME is not None:
+        return _CUSTOM_EMOJI_RUNTIME
+
     try:
         from config import Config
         cfg_val = getattr(Config, "ENABLE_CUSTOM_EMOJI", None)

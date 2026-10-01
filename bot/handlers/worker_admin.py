@@ -523,9 +523,8 @@ async def cmd_dlt_time(client: Client, message: Message):
     await message.reply_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=InlineKeyboardMarkup(buttons))
 
 
-async def cmd_tutorial(client: Client, message: Message):
-    """Display comprehensive system tutorial explaining Main Bot, Workers & Channel Automation."""
-    tutorial_text = (
+def _get_tutorial_arch_text() -> str:
+    return (
         "📚 <b>AnimeDekho System Architecture & Setup Guide</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "<b>1. Multi-Bot Worker Fleet (Load Balancing)</b>\n"
@@ -556,7 +555,80 @@ async def cmd_tutorial(client: Client, message: Message):
         "• <code>/broadcast</code>, <code>/pbroadcast</code>, <code>/dbroadcast</code> — Global broadcasts\n"
         "• <code>/ban &lt;id&gt;</code> & <code>/uban &lt;id&gt;</code> — Manage user access"
     )
-    await message.reply_text(tutorial_text, parse_mode=enums.ParseMode.HTML)
+
+
+def _get_tutorial_pc_text() -> str:
+    return (
+        "💻 <b>AnimeDekho Local PC &amp; VPS Setup Guide</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<b>1. System Prerequisites:</b>\n"
+        "• <b>Python:</b> 3.10, 3.11, 3.12 (Python 3.14 compatible)\n"
+        "• <b>FFmpeg:</b> Required in system PATH for video remuxing\n"
+        "• <b>N_m3u8DL-RE:</b> (Recommended) For multi-audio HLS/DASH streams\n"
+        "• <b>MongoDB:</b> MongoDB Atlas URI or local instance (v5.0+)\n\n"
+        "<b>2. Step-by-Step Installation:</b>\n"
+        "<code># 1. Clone repository</code>\n"
+        "<code>git clone https://github.com/TgbotWorld/animedekho-bot.git</code>\n"
+        "<code>cd animedekho-bot</code>\n\n"
+        "<code># 2. Setup Virtual Environment</code>\n"
+        "<code>python -m venv venv</code>\n"
+        "<code># Windows: venv\\Scripts\\activate</code>\n"
+        "<code># Linux/macOS: source venv/bin/activate</code>\n\n"
+        "<code># 3. Install Python Dependencies</code>\n"
+        "<code>pip install --upgrade pip</code>\n"
+        "<code>pip install -r requirements.txt</code>\n\n"
+        "<code># 4. Install FFmpeg</code>\n"
+        "<code># Windows: winget install Gyan.FFmpeg</code>\n"
+        "<code># Ubuntu/Debian: sudo apt update &amp;&amp; sudo apt install -y ffmpeg</code>\n"
+        "<code># macOS: brew install ffmpeg</code>\n"
+        "<code>ffmpeg -version  # Verify installation</code>\n\n"
+        "<code># 5. Configure Environment Variables</code>\n"
+        "<code>cp .env.example .env</code>\n"
+        "Fill in <code>BOT_TOKEN</code>, <code>API_ID</code>, <code>API_HASH</code>, <code>OWNER_ID</code>, <code>MONGO_URI</code>.\n\n"
+        "<code># 6. Launch Bot</code>\n"
+        "<code>python main.py</code>\n\n"
+        "<b>3. Common Errors &amp; Solutions:</b>\n"
+        "• <b>FFmpeg not found in PATH:</b> Add FFmpeg binary folder to system environment variables and restart terminal.\n"
+        "• <b>MongoDB ServerSelectionTimeoutError:</b> Add <code>0.0.0.0/0</code> in MongoDB Atlas <i>Network Access</i> IP whitelist.\n"
+        "• <b>Telegram FLOOD_WAIT:</b> Bot features built-in backoff; wait out seconds gracefully.\n"
+        "• <b>Missing Hindi Dub Audio:</b> Ensure FFmpeg 5.0+ or N_m3u8DL-RE is installed for multi-audio streams."
+    )
+
+
+def _get_tutorial_buttons(active_view: str) -> InlineKeyboardMarkup:
+    if active_view == "pc":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("📚 System & Fleet Architecture", callback_data="tutorial:arch")],
+        ])
+    else:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("💻 Local PC Setup & Errors Guide", callback_data="tutorial:pc")],
+        ])
+
+
+async def cmd_tutorial(client: Client, message: Message):
+    """Display comprehensive system tutorial explaining Main Bot, Workers & Channel Automation."""
+    text = _get_tutorial_arch_text()
+    buttons = _get_tutorial_buttons("arch")
+    await message.reply_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=buttons)
+
+
+async def tutorial_callback(client: Client, query: CallbackQuery):
+    """Toggle between architecture and PC setup guides."""
+    data = query.data
+    view = data.split(":", 1)[1] if ":" in data else "arch"
+    if view == "pc":
+        text = _get_tutorial_pc_text()
+        buttons = _get_tutorial_buttons("pc")
+    else:
+        text = _get_tutorial_arch_text()
+        buttons = _get_tutorial_buttons("arch")
+
+    try:
+        await query.message.edit_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=buttons)
+    except Exception:
+        pass
+    await query.answer()
 
 
 async def dlt_time_callback(client: Client, query: CallbackQuery):

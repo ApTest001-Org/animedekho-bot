@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import logging
 import math
+import re
 from datetime import datetime, timezone, timedelta
 
 from bot.telegram import Client, enums, filters
@@ -131,25 +132,40 @@ def _format_schedule_text(
     ]
 
     for idx, s in enumerate(page_items, start=start_idx + 1):
-        media = s.get("media", {})
-        title_dict = media.get("title", {})
-        anime_title = title_dict.get("english") or title_dict.get("romaji") or "Unknown Anime"
-        anime_title = html.escape(anime_title)
-        ep = s.get("episode", 1)
-        airing_ts = s.get("airingAt", 0)
-        countdown = schedule_service.format_countdown(airing_ts)
-        ist_time = schedule_service.format_ist_time(airing_ts)
-        genres = ", ".join(media.get("genres", [])[:2]) or "Anime"
-        score = media.get("averageScore")
-        score_str = f"⭐ {score}%" if score else ""
+        if s.get("source") == "animedubhindi":
+            anime_title = html.escape(s.get("title", "Unknown Anime"))
+            season_str = s.get("season", "Season 1")
+            ep = s.get("episode", 1)
+            day_str = s.get("day", "Today")
+            time_str = s.get("time", "")
+            audio_str = s.get("audio", "Hindi Dub")
+            lines.append(
+                f"<b>{idx}. {anime_title}</b>\n"
+                f"   ├ 🎬 <b>Episode:</b> <code>{season_str} EP {ep}</code>\n"
+                f"   ├ ⏰ <b>Day:</b> <code>{day_str}</code>\n"
+                f"   ├ 🕐 <b>Time:</b> <code>{time_str} IST</code>\n"
+                f"   └ 🏷 <b>Audio:</b> 🇮🇳 {audio_str}"
+            )
+        else:
+            media = s.get("media", {})
+            title_dict = media.get("title", {})
+            anime_title = title_dict.get("english") or title_dict.get("romaji") or "Unknown Anime"
+            anime_title = html.escape(anime_title)
+            ep = s.get("episode", 1)
+            airing_ts = s.get("airingAt", 0)
+            countdown = schedule_service.format_countdown(airing_ts)
+            ist_time = schedule_service.format_ist_time(airing_ts)
+            genres = ", ".join(media.get("genres", [])[:2]) or "Anime"
+            score = media.get("averageScore")
+            score_str = f"⭐ {score}%" if score else ""
 
-        lines.append(
-            f"<b>{idx}. {anime_title}</b>\n"
-            f"   ├ 🎬 <b>Episode:</b> <code>{ep}</code>\n"
-            f"   ├ ⏰ <b>Release:</b> <code>{countdown}</code>\n"
-            f"   ├ 🕐 <b>Time:</b> {ist_time}\n"
-            f"   └ 🏷 <b>Info:</b> {genres} {score_str}"
-        )
+            lines.append(
+                f"<b>{idx}. {anime_title}</b>\n"
+                f"   ├ 🎬 <b>Episode:</b> <code>{ep}</code>\n"
+                f"   ├ ⏰ <b>Release:</b> <code>{countdown}</code>\n"
+                f"   ├ 🕐 <b>Time:</b> {ist_time}\n"
+                f"   └ 🏷 <b>Info:</b> {genres} {score_str}"
+            )
 
     lines.append("──────────────────────────")
     lines.append("<i>Click buttons below to switch days or view upcoming!</i>")
@@ -189,42 +205,60 @@ def _format_modern_schedule_text(
 
     blocks = []
     for s in page_items:
-        media = s.get("media", {})
-        title_dict = media.get("title", {})
-        anime_title = title_dict.get("english") or title_dict.get("romaji") or "Unknown Anime"
-        anime_title = html.escape(anime_title)
-        ep = s.get("episode", 1)
-        airing_ts = s.get("airingAt", 0)
-
-        if is_upcoming:
-            if airing_ts:
-                dt = datetime.fromtimestamp(airing_ts, tz=timezone.utc)
-                ist_dt = dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
-                day_name = ist_dt.strftime("%A")
-                time_str = ist_dt.strftime("%I:%M %p IST")
-                date_str = ist_dt.strftime("%d %b %Y")
-                detail_lines = (
-                    f"╠ ✎ S01-Coming Soon (Dub)\n"
-                    f"╠ 📅 Day: {day_name}\n"
-                    f"╠ ⏰ Time: {time_str}\n"
-                    f"╠ 🚀 Date: {date_str}\n"
-                    f"╠ 🇮🇳 Audio: Hindi Dub"
-                )
-            else:
-                detail_lines = (
-                    f"╠ ✎ S01-Coming Soon (Dub)\n"
-                    f"╠ ⚠️ Date: Not Announced\n"
-                    f"╠ 🇮🇳 Audio: Hindi Dub"
-                )
-        else:
-            ist_time = schedule_service.format_ist_time(airing_ts)
+        if s.get("source") == "animedubhindi":
+            anime_title = html.escape(s.get("title", "Unknown Anime"))
+            season_str = s.get("season", "Season 1")
+            ep = s.get("episode", 1)
+            day_str = s.get("day", "Today")
+            time_str = s.get("time", "")
+            audio_str = s.get("audio", "Hindi Dub")
+            m_s = re.search(r"\d+", season_str)
+            s_num = int(m_s.group(0)) if m_s else 1
             detail_lines = (
-                f"╠ ✎ S01-EP{ep:02d} (Dub)\n"
-                f"╠ 🇮🇳 Hindi: {ist_time}"
+                f"╠ ✎ S{s_num:02d}-EP{ep:02d} (Dub)\n"
+                f"╠ 📅 Day: {day_str}\n"
+                f"╠ ⏰ Time: {time_str} IST\n"
+                f"╠ 🇮🇳 Audio: {audio_str}"
             )
+            item_str = f"╠ ❖ <b>{anime_title}</b>\n{detail_lines}"
+            blocks.append(item_str)
+        else:
+            media = s.get("media", {})
+            title_dict = media.get("title", {})
+            anime_title = title_dict.get("english") or title_dict.get("romaji") or "Unknown Anime"
+            anime_title = html.escape(anime_title)
+            ep = s.get("episode", 1)
+            airing_ts = s.get("airingAt", 0)
 
-        item_str = f"╠ ❖ <b>{anime_title}</b>\n{detail_lines}"
-        blocks.append(item_str)
+            if is_upcoming:
+                if airing_ts:
+                    dt = datetime.fromtimestamp(airing_ts, tz=timezone.utc)
+                    ist_dt = dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
+                    day_name = ist_dt.strftime("%A")
+                    time_str = ist_dt.strftime("%I:%M %p IST")
+                    date_str = ist_dt.strftime("%d %b %Y")
+                    detail_lines = (
+                        f"╠ ✎ S01-Coming Soon (Dub)\n"
+                        f"╠ 📅 Day: {day_name}\n"
+                        f"╠ ⏰ Time: {time_str}\n"
+                        f"╠ 🚀 Date: {date_str}\n"
+                        f"╠ 🇮🇳 Audio: Hindi Dub"
+                    )
+                else:
+                    detail_lines = (
+                        f"╠ ✎ S01-Coming Soon (Dub)\n"
+                        f"╠ ⚠️ Date: Not Announced\n"
+                        f"╠ 🇮🇳 Audio: Hindi Dub"
+                    )
+            else:
+                ist_time = schedule_service.format_ist_time(airing_ts)
+                detail_lines = (
+                    f"╠ ✎ S01-EP{ep:02d} (Dub)\n"
+                    f"╠ 🇮🇳 Hindi: {ist_time}"
+                )
+
+            item_str = f"╠ ❖ <b>{anime_title}</b>\n{detail_lines}"
+            blocks.append(item_str)
 
     box_content = "\n║\n".join(blocks)
     text = (

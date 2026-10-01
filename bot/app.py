@@ -56,6 +56,14 @@ async def _on_start(client: Client):
         bot_username=bot_username,
     )
     log.info("Library manager initialized (bot: @%s)", bot_username)
+    if db:
+        try:
+            from bot.emojis import set_custom_emoji_runtime_state
+            custom_emoji_state = await db.get_enable_custom_emoji()
+            set_custom_emoji_runtime_state(custom_emoji_state)
+            log.info("Custom emoji runtime initialized: %s", custom_emoji_state)
+        except Exception as e:
+            log.debug("Failed initializing custom emoji state: %s", e)
 
     # Resolve channel peers so Pyrogram can send to them
     # Try get_chat first, fall back to raw API (needed on fresh sessions)

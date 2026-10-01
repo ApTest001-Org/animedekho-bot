@@ -289,7 +289,9 @@ async def _handle_channel_join_request(client: Client, message: Message, series_
     user_id = user.id if user else 0
 
     from bot.fsub import check_fsub, create_timer_invite_link
-    is_sub, f_text, f_markup = await check_fsub(client, user_id, retry_param=f"join_{series_slug}")
+    from utils.helpers import encode_file_param
+    sec_retry_param = encode_file_param(f"join_{series_slug}")
+    is_sub, f_text, f_markup = await check_fsub(client, user_id, retry_param=sec_retry_param)
     if not is_sub:
         await message.reply_text(f_text, parse_mode=enums.ParseMode.HTML, reply_markup=f_markup)
         return
@@ -310,7 +312,7 @@ async def _handle_channel_join_request(client: Client, message: Message, series_
             bot_username = me.username or ""
         except Exception:
             bot_username = ""
-    retry_url = f"https://t.me/{bot_username}?start=join_{series_slug}" if bot_username else ""
+    retry_url = f"https://t.me/{bot_username}?start={sec_retry_param}" if bot_username else ""
 
     from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
 

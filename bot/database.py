@@ -1109,6 +1109,11 @@ class Database:
     async def set_enable_custom_emoji(self, enabled: bool):
         """Set Telegram Premium Custom Emojis toggle."""
         await self.set_config("enable_custom_emoji", "on" if enabled else "off")
+        try:
+            from bot.emojis import set_custom_emoji_runtime_state
+            set_custom_emoji_runtime_state(enabled)
+        except Exception:
+            pass
 
     async def get_thumb_template(self) -> str:
         """Get selected thumbnail template (modern, cinematic, movie_gold, neon_cyber, minimal, random)."""

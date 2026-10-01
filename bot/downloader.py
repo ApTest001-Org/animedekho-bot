@@ -291,7 +291,24 @@ async def n_m3u8dl_re_download(
     job_temp_dir = _TEMP_BASE / f"re_{stem}_{job_id}"
     job_temp_dir.mkdir(parents=True, exist_ok=True)
 
-    height = quality.replace("p", "") if quality.endswith("p") and quality[:-1].isdigit() else ""
+    clean_q = str(quality).strip().lower()
+    m_h = re.search(r"(\d{3,4})p?", clean_q)
+    if m_h and int(m_h.group(1)) in (240, 360, 480, 540, 720, 1080, 1440, 2160):
+        height = m_h.group(1)
+    elif "4k" in clean_q or "2160" in clean_q:
+        height = "2160"
+    elif "1080" in clean_q or "fhd" in clean_q:
+        height = "1080"
+    elif "720" in clean_q or "hdrip" in clean_q or "hd" in clean_q or "webrip" in clean_q:
+        height = "720"
+    elif "480" in clean_q or "sd" in clean_q or "dvdrip" in clean_q:
+        height = "480"
+    elif "360" in clean_q:
+        height = "360"
+    elif "240" in clean_q:
+        height = "240"
+    else:
+        height = ""
 
     # Attempt 1: Try with resolution selector if height is specified
     async def _run_dl(target_url: str, select_res: bool) -> bool:
@@ -540,20 +557,21 @@ async def resolve_m3u8_variant(master_url: str, target_quality: str, referer: st
 
     t_clean = target_quality.strip().lower()
     h_target = None
-    if t_clean.endswith("p") and t_clean[:-1].isdigit():
-        h_target = int(t_clean[:-1])
-    elif t_clean.isdigit():
-        h_target = int(t_clean)
+    m_res = re.search(r"(\d{3,4})p?", t_clean)
+    if m_res and int(m_res.group(1)) in (240, 360, 480, 540, 720, 1080, 1440, 2160):
+        h_target = int(m_res.group(1))
     elif "4k" in t_clean or "2160" in t_clean:
         h_target = 2160
-    elif "1080" in t_clean:
+    elif "1080" in t_clean or "fhd" in t_clean:
         h_target = 1080
-    elif "720" in t_clean:
+    elif "720" in t_clean or "hdrip" in t_clean or "hd rip" in t_clean or "webrip" in t_clean or "hd" in t_clean:
         h_target = 720
-    elif "480" in t_clean:
+    elif "480" in t_clean or "sd" in t_clean or "dvdrip" in t_clean:
         h_target = 480
     elif "360" in t_clean:
         h_target = 360
+    elif "240" in t_clean:
+        h_target = 240
 
     if not h_target:
         return master_url
@@ -723,10 +741,15 @@ async def download_media(
             return True
         log.warning("N_m3u8DL-RE failed for %s, falling back to FFmpeg", stream_url[:60])
 
-    # Fallback to FFmpeg on stream_url or variant_url
+    # Fallback to FFmpeg on resolved variant_url or stream_url
     target_url = variant_url or stream_url
+    if not variant_url and ".m3u8" in stream_url.lower():
+        resolved = await resolve_m3u8_variant(stream_url, quality, referer=referer)
+        if resolved and resolved != stream_url:
+            target_url = resolved
+
     ok = await ffmpeg_download(target_url, output_path, progress_msg, title, quality, referer=referer)
-    if not ok and variant_url and variant_url != stream_url:
+    if not ok and target_url != stream_url:
         ok = await ffmpeg_download(stream_url, output_path, progress_msg, title, quality, referer=referer)
 
     return ok
@@ -1297,6 +1320,25 @@ async def download_and_upload(
                 log.debug("Auto-delete scheduling in downloader failed: %s", ade)
 
         total_time = time.time() - overall_start
+
+        # Deliver upload completion notification directly to Dump Channel (not owner DM)
+        if dump_channel_id:
+            try:
+                await client.send_message(
+                    chat_id=dump_channel_id,
+                    text=(
+                        f"✅ <b>Upload Complete Notice</b>\n"
+                        f"┌ 📺 <b>Title:</b> {html.escape(title)}\n"
+                        f"├ 🎬 <b>Quality:</b> <code>{quality}</code>\n"
+                        f"├ 📦 <b>Size:</b> {_format_size(file_size)}\n"
+                        f"├ ⏱ <b>Total Time:</b> {_format_time(total_time)}\n"
+                        f"└ 📁 <b>Mode:</b> <code>{upload_mode.upper()}</code>"
+                    ),
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            except Exception as ce:
+                log.warning("Could not send dump channel completion notice: %s", ce)
+
         await progress_msg.edit_text(
             _done_text(title, quality, file_size, total_time),
             parse_mode=enums.ParseMode.HTML)

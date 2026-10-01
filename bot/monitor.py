@@ -283,8 +283,21 @@ class EpisodeMonitorService:
                     except Exception as le:
                         log.warning("Failed updating library album in monitor: %s", le)
 
-                # Log to owner/log channel
-                if bot_logger := getattr(settings, "bot_logger", None):
+                # Log completion to Dump Channel (not owner DM) or log channel
+                if dump_chan and self.client:
+                    try:
+                        await self.client.send_message(
+                            chat_id=dump_chan,
+                            text=(
+                                f"🤖 <b>Auto-Monitor New Episode:</b>\n"
+                                f"📺 <b>{series.title}</b> S{season_num}E{ep.number} [{best_quality.resolution}]\n"
+                                f"📢 Uploaded to channel: <code>{dest_chan}</code>"
+                            ),
+                            parse_mode=enums.ParseMode.HTML,
+                        )
+                    except Exception as de:
+                        log.warning("Failed sending monitor completion to dump channel: %s", de)
+                elif bot_logger := getattr(settings, "bot_logger", None):
                     await bot_logger.log_info(
                         f"🤖 <b>Auto-Monitor New Episode:</b>\n"
                         f"📺 {series.title} S{season_num}E{ep.number} [{best_quality.resolution}]\n"
