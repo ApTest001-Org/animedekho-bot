@@ -145,15 +145,15 @@ class LibraryManager:
                 f"<blockquote>• {s_part} | {e_part} | #Added {check_emoji}</blockquote>"
             )
 
-            # Build action buttons for notification
-            notif_buttons = []
+            # Build action buttons for notification (Issue #16: strictly private channel join button, no Get File)
             mapping = await self.db.get_channel_mapping(series_slug, title=series_title) if self.db else None
-            if mapping and mapping.get("channel_id"):
-                sec_join = encode_file_param(f"join_{series_slug}")
-                join_link = f"https://t.me/{self.bot_username}?start={sec_join}"
-                notif_buttons.append([InlineKeyboardButton("🚀 Open Channel", url=join_link)])
-            notif_buttons.append([InlineKeyboardButton("📥 Get File", url=file_link)])
-            notif_markup = InlineKeyboardMarkup(notif_buttons)
+            if not mapping or not mapping.get("channel_id"):
+                log.warning("Skipping episode reply notification for '%s': private channel is not mapped", series_slug)
+                return
+
+            sec_join = encode_file_param(f"join_{series_slug}")
+            join_link = f"https://t.me/{self.bot_username}?start={sec_join}"
+            notif_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Open Channel", url=join_link)]])
 
             # Send as reply in main channel
             if target_message_id and self.channel:
@@ -247,6 +247,26 @@ class LibraryManager:
 
         # Get channel mapping (with movie parent anime routing), album mode, and post style
         mapping = await self.db.get_channel_mapping(series_slug, is_movie=is_movie, title=series_title)
+        if not mapping or not mapping.get("channel_id"):
+            log.warning("Skipping main channel post for '%s': private channel is not mapped", series_slug)
+            from config import Config
+            owner_id = getattr(Config, "OWNER_ID", None)
+            if owner_id and self.client:
+                try:
+                    await self.client.send_message(
+                        chat_id=owner_id,
+                        text=(
+                            f"⚠️ <b>Private anime channel is not mapped. Please add/map the channel first using /mapchannel.</b>\n\n"
+                            f"📺 <b>Anime:</b> {series_title}\n"
+                            f"🏷️ <b>Slug:</b> <code>{series_slug}</code>\n"
+                            f"📁 <b>Episode:</b> {episode_key} ({quality})"
+                        ),
+                        parse_mode=enums.ParseMode.HTML,
+                    )
+                except Exception as we:
+                    log.warning("Failed sending unmapped channel warning to owner: %s", we)
+            return
+
         album_mode = await self.db.get_config("album_mode", default="channel")
         post_style = await self.db.get_post_style()
 
@@ -469,6 +489,10 @@ class LibraryManager:
             poster_url = await resolve_best_poster(series_title, poster_url, is_movie=is_movie)
 
             mapping = await self.db.get_channel_mapping(series_slug, is_movie=is_movie, title=series_title)
+            if not mapping or not mapping.get("channel_id"):
+                log.warning("Skipping album update for '%s': private channel is not mapped", series_slug)
+                return
+
             album_mode = await self.db.get_config("album_mode", default="channel")
             post_style = await self.db.get_post_style()
 
@@ -725,71 +749,17 @@ class LibraryManager:
     ) -> InlineKeyboardMarkup:
         """
         Build inline buttons for library album post.
-        Per Issue #12:
-        - Button 1: 'DOWNLOAD' -> leads to mapped anime series channel join/download flow.
-        - Button 2: 'DOWNLOAD NETWORK' -> opens configured network channel link.
+        Per Issue #16:
+        Main Channel Post must ONLY include the private anime channel join button (🚀 Open Channel).
+        Direct Get File, qualities (📥 720p, etc.) and DOWNLOAD NETWORK are completely removed from main channel posts.
         """
-        from bot.child_bots import child_bot_manager
-        from config import Config
-        buttons = []
-
         slug_for_join = series_slug or (channel_mapping.get("series_slug", "") if channel_mapping else "")
         from utils.helpers import encode_file_param
         sec_join = encode_file_param(f"join_{slug_for_join or series_slug}")
         join_deep = f"https://t.me/{self.bot_username}?start={sec_join}"
-        download_btn = InlineKeyboardButton("DOWNLOAD", url=join_deep)
-
-        network_link = (
-            getattr(Config, "NETWORK_CHANNEL_LINK", "")
-            or getattr(Config, "MAIN_CHANNEL_LINK", "")
-            or join_deep
-        )
-        network_btn = InlineKeyboardButton("DOWNLOAD NETWORK", url=network_link)
-
-        # Mode: "channel" (default per Issue #12)
-        if album_mode == "channel":
-            buttons.append([download_btn])
-            buttons.append([network_btn])
-            return InlineKeyboardMarkup(buttons)
-
-        # Mode: "both"
-        if album_mode == "both":
-            buttons.append([download_btn, network_btn])
-
-        # Direct download bot buttons
-        from utils.helpers import encode_file_param
-        if is_movie:
-            row = []
-            for q in qualities:
-                target_bot = self.bot_username
-                if child_bot_manager:
-                    assigned = child_bot_manager.get_bot_for_quality(q)
-                    if assigned:
-                        target_bot = assigned
-                sec_p = encode_file_param(f"get_{series_slug}_{q}_movie")
-                deep = f"https://t.me/{target_bot}?start={sec_p}"
-                row.append(InlineKeyboardButton(f"📥 {q}", url=deep))
-                if len(row) == 2:
-                    buttons.append(row)
-                    row = []
-            if row:
-                buttons.append(row)
-        else:
-            for q in qualities:
-                target_bot = self.bot_username
-                if child_bot_manager:
-                    assigned = child_bot_manager.get_bot_for_quality(q)
-                    if assigned:
-                        target_bot = assigned
-                sec_p = encode_file_param(f"get_{series_slug}_{q}_all")
-                deep = f"https://t.me/{target_bot}?start={sec_p}"
-                buttons.append([InlineKeyboardButton(f"📥 Get All Episodes [{q}]", url=deep)])
-
-        if not buttons:
-            buttons.append([download_btn])
-            buttons.append([network_btn])
-
-        return InlineKeyboardMarkup(buttons)
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚀 Open Channel", url=join_deep)]
+        ])
 
     async def get_file(self, series_slug: str, quality: str, episode_key: str) -> str | None:
         """Get file_id for a specific episode."""

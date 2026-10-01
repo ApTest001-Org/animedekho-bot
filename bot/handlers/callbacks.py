@@ -277,7 +277,18 @@ async def _handle_season(q: CallbackQuery, slug: str, season: int):
 
 async def _handle_episode(q: CallbackQuery, ep_slug: str):
     """Show episode with skeleton quality buttons instantly — no server resolution."""
-    episode = await api.get_episode(ep_slug)
+    try:
+        episode = await api.get_episode(ep_slug)
+    except Exception as e:
+        log.warning("api.get_episode failed for '%s': %s", ep_slug, e)
+        m = re.match(r".*-(\d+)x(\d+)", ep_slug)
+        s_num = int(m.group(1)) if m else 1
+        e_num = int(m.group(2)) if m else 1
+        series_slug = extract_series_slug(ep_slug)
+        series_name = slug_to_title(series_slug) if series_slug else "Episode"
+        title = f"{series_name} S{s_num}E{e_num:02d}"
+        from api.models import Episode
+        episode = Episode(number=e_num, slug=ep_slug, season=s_num, title=title, servers=[])
 
     # Show default quality buttons immediately (like YouTube skeleton)
     from config.settings import settings
@@ -304,23 +315,22 @@ async def _handle_episode(q: CallbackQuery, ep_slug: str):
 
 
 async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, ep_slug: str):
-    """Handle single episode download — resolves servers and falls back across servers if needed."""
+    """Handle single episode download — resolves servers and falls back across multi-source chain if needed."""
     chat_id = q.message.chat.id
     user = q.from_user
 
     # Get stored server data (may be raw/unresolved from skeleton episode view)
     data = _get_servers(chat_id, ep_slug)
     if not data:
-        episode = await api.get_episode(ep_slug)
-        _store_servers(chat_id, ep_slug, episode.servers, episode.title)
-        data = _get_servers(chat_id, ep_slug)
+        try:
+            episode = await api.get_episode(ep_slug)
+            _store_servers(chat_id, ep_slug, episode.servers, episode.title)
+            data = _get_servers(chat_id, ep_slug)
+        except Exception as e:
+            log.warning("get_episode failed in _handle_download for %s: %s", ep_slug, e)
 
-    if not data or not data["servers"]:
-        await _safe_edit(q, "⚠️ No servers found. Please go back and try again.")
-        return
-
-    title = data.get("title", ep_slug)
-    raw_servers = data["servers"]
+    title = data.get("title", ep_slug) if data else ep_slug
+    raw_servers = data.get("servers", []) if data else []
 
     # Extract season/episode info for filename and ToonFlix lookup
     import re
@@ -352,16 +362,13 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
                 await db.files.delete_one({"_id": cached_doc["_id"]})
 
     # Lazy resolve: prioritize servers matching requested quality
-    resolved = await _lazy_resolve_servers(raw_servers, quality_pref)
+    resolved = await _lazy_resolve_servers(raw_servers, quality_pref) if raw_servers else []
     if resolved:
         _store_servers(chat_id, ep_slug, resolved, title)
 
-    candidates = _find_quality_candidates(resolved or raw_servers, quality_pref)
+    candidates = _find_quality_candidates(resolved or raw_servers, quality_pref) if (resolved or raw_servers) else []
 
-    # Quality fallback logic:
-    # If user wants 4K: AnimeDekho lacks 4K -> AnimeDrive is default for 4K.
-    # If AnimeDrive does NOT have 4K -> switch to ToonFlix (which also has 4K).
-    # If user wants another quality (e.g. 1080p) and AnimeDekho lacks it -> switch to AnimeDrive, then ToonFlix.
+    # Check if exact quality or 4K found on AnimeDekho
     has_exact = any(q.resolution.lower() == quality_pref.lower() for _, q in candidates)
     is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
 
@@ -369,8 +376,9 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
         q = q_str.lower()
         return any(k in q for k in ("4k", "2160", "1080", "hq", "10bit", "10-bit", "x265", "hevc"))
 
-    if not has_exact or is_4k:
-        found_4k = False
+    # Multi-source fallback if AnimeDekho has no servers, lacks requested quality, or user requested 4K
+    if not candidates or not has_exact or is_4k:
+        found_match = False
 
         # Step 1: Secondary - AnimeDrive (DEFAULT for 4K)
         try:
@@ -390,24 +398,18 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
                     res_p = await resolve_best_poster(series_title, ad_res.get("poster"))
                     if res_p:
                         _poster_cache[series_slug] = res_p
-                if is_4k and _is_4k_satisfying(ad_q):
-                    # Exact 4K or enhanced 1080p HQ tier found on AnimeDrive! AnimeDrive is default for 4K
+                if (is_4k and _is_4k_satisfying(ad_q)) or (not is_4k and ad_q == quality_pref.lower()):
                     candidates.insert(0, (ad_srv, ad_srv.qualities[0]))
                     has_exact = True
-                    found_4k = True
-                    log.info("AnimeDrive provided 4K-tier stream [%s] for '%s' S%dE%d", ad_res["quality"], series_title, season, ep_num)
-                elif not is_4k and ad_q == quality_pref.lower():
-                    # Exact requested quality found on AnimeDrive
-                    candidates.insert(0, (ad_srv, ad_srv.qualities[0]))
-                    has_exact = True
-                    log.info("Added AnimeDrive [%s] stream candidate", ad_res["quality"])
+                    found_match = True
+                    log.info("AnimeDrive provided exact/4K stream [%s] for '%s' S%dE%d", ad_res["quality"], series_title, season, ep_num)
                 else:
                     candidates.append((ad_srv, ad_srv.qualities[0]))
         except Exception as e:
             log.warning("AnimeDrive resolution error: %s", e)
 
-        # Step 2: Tertiary - ToonFlix (if exact quality or 4K not found on AnimeDrive)
-        if not has_exact or (is_4k and not found_4k):
+        # Step 2: Tertiary - ToonFlix
+        if not candidates or not has_exact or (is_4k and not found_match):
             try:
                 from extractors.toonflix import toonflix
                 log.info("Checking ToonFlix fallback for '%s' S%dE%d [%s]", series_title, season, ep_num, quality_pref)
@@ -428,12 +430,37 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
                     if (is_4k and _is_4k_satisfying(tf_q)) or (not is_4k and tf_q == quality_pref.lower()):
                         candidates.insert(0, (tf_srv, tf_srv.qualities[0]))
                         has_exact = True
-                        found_4k = True
-                        log.info("ToonFlix provided 4K-tier %s stream candidate", tf_res["quality"])
+                        found_match = True
+                        log.info("ToonFlix provided exact/4K %s stream candidate", tf_res["quality"])
                     else:
                         candidates.append((tf_srv, tf_srv.qualities[0]))
             except Exception as e:
                 log.warning("ToonFlix resolution error: %s", e)
+
+        # Step 3: Multi-Source Scrapers (ToonWorld4All, RareAnimes, DeadToons, TOONo)
+        if not candidates or not has_exact:
+            try:
+                from extractors.multisource import multi_source_manager
+                log.info("Checking multi-source manager for '%s' S%dE%d [%s]", series_title, season, ep_num, quality_pref)
+                ms_res = await multi_source_manager.resolve_episode_stream(
+                    series_title=series_title,
+                    season=season,
+                    episode=ep_num,
+                    quality_pref=quality_pref,
+                    series_slug=series_slug,
+                )
+                if ms_res and ms_res.get("url"):
+                    ms_srv = VideoServer(
+                        name=ms_res.get("source", "MultiSource"),
+                        player_url=ms_res["url"],
+                        is_resolved=True,
+                        qualities=[Quality(resolution=ms_res.get("quality", quality_pref), url=ms_res["url"])],
+                    )
+                    candidates.insert(0, (ms_srv, ms_srv.qualities[0]))
+                    has_exact = True
+                    log.info("%s provided fallback stream candidate", ms_res.get("source"))
+            except Exception as e:
+                log.warning("Multi-source manager resolution error: %s", e)
 
     if not candidates:
         await _safe_edit(q, "⚠️ No downloadable URL found on any server.")

@@ -2,6 +2,8 @@
 
 import logging
 import os
+import re
+import html as htmlmod
 from bot.telegram import Client, enums
 from bot.telegram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -741,39 +743,52 @@ async def cmd_mapchannel(client: Client, message: Message):
         )
         return
 
-    # Find the channel ID token (starts with -100 or integer)
-    cid_idx = -1
-    for i, token in enumerate(args):
-        cleaned = token.strip()
-        if cleaned.lstrip("-").isdigit():
-            cid_idx = i
-            break
+    channel_id = None
+    invite_link = ""
+    language = ""
+    name_tokens = []
+    audio_keys = {"hindi", "english", "japanese", "multi", "multiaudio", "multi-audio"}
 
-    if cid_idx == -1:
-        await message.reply_text("❌ Please specify a valid integer Channel ID (e.g. <code>-100123456789</code>).", parse_mode=enums.ParseMode.HTML)
+    for token in args:
+        t = token.strip()
+        if t.lstrip("-").isdigit():
+            channel_id = int(t)
+        elif t.startswith("http://") or t.startswith("https://") or t.startswith("t.me"):
+            invite_link = t
+        elif t.lower() in audio_keys:
+            language = "multi" if "multi" in t.lower() else t.lower()
+        elif t.startswith("@") and channel_id is None:
+            try:
+                chat = await client.get_chat(t)
+                channel_id = chat.id
+            except Exception:
+                name_tokens.append(t)
+        else:
+            name_tokens.append(t)
+
+    if channel_id is None:
+        await message.reply_text("❌ Please specify a valid Channel ID (e.g. <code>-100123456789</code> or <code>@channel_username</code>).", parse_mode=enums.ParseMode.HTML)
         return
 
-    name_tokens = args[:cid_idx]
     if not name_tokens:
-        await message.reply_text("❌ Please specify the anime series name before the Channel ID.", parse_mode=enums.ParseMode.HTML)
+        await message.reply_text("❌ Please specify the anime series name (e.g. <code>Solo Leveling</code>).", parse_mode=enums.ParseMode.HTML)
         return
 
     series_name = " ".join(name_tokens).strip()
     slug = re.sub(r'[^a-zA-Z0-9]+', '-', series_name).strip('-').lower()
-    channel_id = int(args[cid_idx].strip())
-
-    invite_link = ""
-    language = ""
-    for extra in args[cid_idx + 1:]:
-        extra_clean = extra.strip()
-        if extra_clean.startswith("http://") or extra_clean.startswith("https://") or extra_clean.startswith("t.me"):
-            invite_link = extra_clean
-        elif not language:
-            language = extra_clean.lower()
 
     if not db:
         await message.reply_text("⚠️ Database not available.")
         return
+
+    # Check if DB already has files or series for this slug or title, align with it
+    existing = await db.files.find_one({"$or": [
+        {"series_slug": slug},
+        {"series_title": {"$regex": f"^{re.escape(series_name)}$", "$options": "i"}},
+    ]})
+    if existing:
+        slug = existing.get("series_slug", slug)
+        series_name = existing.get("series_title", series_name)
 
     mapping = await db.set_channel_mapping(
         series_slug=slug,
@@ -940,7 +955,9 @@ async def cmd_channels(client: Client, message: Message):
         if lang_routes:
             r_items = [f"{l.upper()}: <code>{r['channel_id']}</code>" for l, r in lang_routes.items()]
             routes_str = f"\n  🌐 <b>Routes:</b> {', '.join(r_items)}"
-        lines.append(f"• <b>{title}</b>\n  Default ID: <code>{cid}</code> | {link_str} | Slug: <code>{c.get('series_slug')}</code>{routes_str}")
+        audio = c.get("language")
+        audio_str = f" | Audio: <code>{audio.upper()}</code>" if audio else ""
+        lines.append(f"• <b>{title}</b>\n  Default ID: <code>{cid}</code> | {link_str}{audio_str} | Slug: <code>{c.get('series_slug')}</code>{routes_str}")
 
     text = f"📋 <b>Mapped Series Channels ({len(channels)}):</b>\n\n" + "\n\n".join(lines)
     if len(text) > 4000:

@@ -16,13 +16,16 @@ from utils.anilist import is_valid_poster_url
 
 # ── Regex patterns ────────────────────────────────────────────────
 RE_SERIES_URL = re.compile(
-    r"https://animedekho\.app/series-hindi/([^/]+)/"
+    r"(?:https?://[^/]+)?/series-hindi/([^/?#]+)/?",
+    re.IGNORECASE,
 )
 RE_MOVIE_URL = re.compile(
-    r"https://animedekho\.app/movie-hindi/([^/]+)/"
+    r"(?:https?://[^/]+)?/movie-hindi/([^/?#]+)/?",
+    re.IGNORECASE,
 )
 RE_EPISODE_URL = re.compile(
-    r"https://animedekho\.app/epi/([^/]+?)-(\d+)x(\d+)/"
+    r"(?:https?://[^/]+)?/epi/([^/?#]+?)-(\d+)x(\d+)/?",
+    re.IGNORECASE,
 )
 RE_TRDEKHO = re.compile(
     r"trdekho(?:%3D|=)(\d+)(?:%26|&)trid(?:%3D|=)(\d+)(?:%26|&)trtype(?:%3D|=)(\d+)"
@@ -158,9 +161,22 @@ def parse_series_detail(html: str, slug: str) -> Series:
         full_slug = f"{ep_slug_full}-{s_num}x{e_num}"
         ep = Episode(number=e, slug=full_slug, season=s)
         seasons.setdefault(s, Season(number=s))
-        # Avoid duplicates
         if not any(x.number == e for x in seasons[s].episodes):
             seasons[s].episodes.append(ep)
+
+    # Secondary fallback: inspect all links in HTML for /epi/ or /episode/
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        m_ep = re.search(r"/(?:epi|episode)/([^/?#]+?)-(\d+)x(\d+)/?", href, re.I)
+        if m_ep:
+            ep_slug_full, s_num, e_num = m_ep.group(1), m_ep.group(2), m_ep.group(3)
+            s = int(s_num)
+            e = int(e_num)
+            full_slug = f"{ep_slug_full}-{s_num}x{e_num}"
+            ep = Episode(number=e, slug=full_slug, season=s)
+            seasons.setdefault(s, Season(number=s))
+            if not any(x.number == e for x in seasons[s].episodes):
+                seasons[s].episodes.append(ep)
 
     for s in seasons.values():
         s.episodes.sort(key=lambda x: x.number)

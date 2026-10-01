@@ -64,12 +64,8 @@ class AnimeDekhoAPI:
 
     # ── Search ────────────────────────────────────────────────────
 
-    async def search(self, query: str, page: int = 1) -> list[SearchResult]:
-        """Search anime/movies via admin-ajax action_search with auto-healing and GET ?s= fallback."""
-        query = query.strip()
-        if not query:
-            return []
-
+    async def _search_animedekho(self, query: str, page: int = 1) -> list[SearchResult]:
+        """Internal search against AnimeDekho AJAX and GET ?s= endpoints."""
         # Strategy 1: AJAX search with nonce
         for attempt in range(2):
             try:
@@ -125,6 +121,38 @@ class AnimeDekhoAPI:
 
         return []
 
+    async def search(self, query: str, page: int = 1) -> list[SearchResult]:
+        """Search anime/movies with multi-source fallback architecture."""
+        query = query.strip()
+        if not query:
+            return []
+
+        # 1. Primary search on AnimeDekho
+        results = await self._search_animedekho(query, page=page)
+        if results:
+            return results
+
+        # 2. Clean query search on AnimeDekho (strip Season/Dub suffixes)
+        clean_q = re.sub(
+            r"(?i)\s*(?:season\s*\d+|s\d+|part\s*\d+|cour\s*\d+|hindi|dubbed|subbed|multi-audio|tamil|telugu).*$",
+            "",
+            query,
+        ).strip()
+        if clean_q and clean_q.lower() != query.lower():
+            log.info("AnimeDekho 0 results for '%s'. Trying clean query: '%s'", query, clean_q)
+            results = await self._search_animedekho(clean_q, page=page)
+            if results:
+                return results
+
+        # 3. Multi-source fallback search (AnimeDrive, ToonFlix, ToonWorld4All, RareAnimes, DeadToons, TOONo)
+        log.info("AnimeDekho returned 0 results for '%s'. Querying multi-source fallback scrapers...", query)
+        from extractors.multisource import multi_source_manager
+        fallback_results = await multi_source_manager.search_fallback(query)
+        if fallback_results:
+            return fallback_results
+
+        return []
+
     # ── Listings ──────────────────────────────────────────────────
 
     async def get_recent_series(self, page: int = 1) -> PaginatedResult:
@@ -149,8 +177,19 @@ class AnimeDekhoAPI:
 
     async def get_series(self, slug: str) -> Series:
         url = f"{cfg.base_url}{cfg.series_path}/{slug}/"
-        html = await http_client.get(url)
-        series = parse_series_detail(html, slug)
+        try:
+            html = await http_client.get(url)
+            series = parse_series_detail(html, slug)
+        except Exception as e:
+            clean_s = re.sub(r'-(?:season-\d+|s\d+|part-\d+|cour-\d+|hindi|dubbed|subbed)$', '', slug)
+            if clean_s != slug:
+                log.info("get_series failed for '%s', retrying base slug '%s'", slug, clean_s)
+                url_base = f"{cfg.base_url}{cfg.series_path}/{clean_s}/"
+                html = await http_client.get(url_base)
+                series = parse_series_detail(html, clean_s)
+            else:
+                raise e
+
         try:
             from utils.anilist import resolve_best_poster
             best = await resolve_best_poster(series.title, series.poster, is_movie=False)

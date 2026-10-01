@@ -324,6 +324,9 @@ async def _handle_channel_join_request(client: Client, message: Message, series_
         member_limit=1,
         name=f"Join {series_slug[:15]}",
     )
+    if not timer_link and mapping.get("invite_link"):
+        timer_link = mapping["invite_link"]
+
     if not timer_link:
         buttons = []
         if retry_url:

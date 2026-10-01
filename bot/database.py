@@ -480,16 +480,29 @@ class Database:
         try:
             doc = await self.channel_mappings.find_one({"series_slug": series_slug})
 
-            # Intelligent Movie -> Existing Anime Series Channel Routing (Issue #12)
-            if not doc and (is_movie or "-movie" in series_slug or "-film" in series_slug or (title and "movie" in title.lower())):
+            # Intelligent Series Season & Movie -> Existing Anime Channel Routing (Issues #12 & #16)
+            if not doc:
                 import re
                 candidate_slugs = []
                 clean_s = series_slug
-                for sfx in ("-the-movie", "-movie", "-film", "-the-final-chapter", "-part-1", "-part-2", "-part-3", "-0"):
-                    clean_s = clean_s.replace(sfx, "")
-                clean_s = re.sub(r"-(?:mugen-train|shippuden-the-movie|super-hero|red|stampede|gold|resurrection|battle-of-gods|zero).*$", "", clean_s)
-                clean_s = clean_s.strip("-")
-                if clean_s and clean_s != series_slug:
+                # Iteratively strip season, part, cour, audio, and movie suffixes
+                for _ in range(3):
+                    prev = clean_s
+                    clean_s = re.sub(
+                        r"-(?:season-\d+|s\d+|part-\d+|cour-\d+|hindi|english|japanese|multi|dubbed|subbed|the-movie|movie|film|the-final-chapter|final-season|0)$",
+                        "",
+                        clean_s,
+                        flags=re.IGNORECASE,
+                    ).strip("-")
+                    clean_s = re.sub(
+                        r"-(?:mugen-train|shippuden-the-movie|super-hero|red|stampede|gold|resurrection|battle-of-gods|zero).*$",
+                        "",
+                        clean_s,
+                        flags=re.IGNORECASE,
+                    ).strip("-")
+                    if clean_s == prev:
+                        break
+                if clean_s and clean_s != series_slug and clean_s not in candidate_slugs:
                     candidate_slugs.append(clean_s)
 
                 if title:
@@ -501,19 +514,31 @@ class Database:
                         if slug_c and slug_c not in candidate_slugs and slug_c != series_slug:
                             candidate_slugs.append(slug_c)
 
+                # 1. Direct candidate slug match
                 for cand in candidate_slugs:
                     doc = await self.channel_mappings.find_one({"series_slug": cand})
                     if doc:
-                        log.info("Movie '%s' successfully routed to parent anime series channel '%s' (ID: %s)", series_slug, cand, doc.get("channel_id"))
+                        log.info("Series/Movie '%s' successfully routed to mapped channel '%s' (ID: %s)", series_slug, cand, doc.get("channel_id"))
                         break
-                    # Fuzzy prefix match (e.g. ^demon-slayer)
-                    if "-" in cand:
-                        prefix = cand.split("-", 2)[:2]
-                        prefix_pattern = f"^{'-'.join(prefix)}"
-                        doc = await self.channel_mappings.find_one({"series_slug": {"$regex": prefix_pattern, "$options": "i"}})
+
+                # 2. Case-insensitive title match
+                if not doc and title:
+                    clean_t = re.sub(r"(?i)\s*(?:season\s*\d+|s\d+|part\s*\d+|cour\s*\d+|hindi|dubbed|subbed|movie|film).*$", "", title).strip()
+                    if clean_t:
+                        doc = await self.channel_mappings.find_one({"series_title": {"$regex": f"^{re.escape(clean_t)}$", "$options": "i"}})
                         if doc:
-                            log.info("Movie '%s' routed to series channel via prefix '%s' (ID: %s)", series_slug, doc.get("series_slug"), doc.get("channel_id"))
-                            break
+                            log.info("Series '%s' routed via title '%s' to channel (ID: %s)", series_slug, clean_t, doc.get("channel_id"))
+
+                # 3. Fuzzy prefix match
+                if not doc:
+                    for cand in candidate_slugs:
+                        if "-" in cand:
+                            prefix = cand.split("-", 2)[:2]
+                            prefix_pattern = f"^{'-'.join(prefix)}"
+                            doc = await self.channel_mappings.find_one({"series_slug": {"$regex": prefix_pattern, "$options": "i"}})
+                            if doc:
+                                log.info("Series/Movie '%s' routed to channel via prefix '%s' (ID: %s)", series_slug, doc.get("series_slug"), doc.get("channel_id"))
+                                break
 
             if not doc:
                 return None
@@ -556,17 +581,26 @@ class Database:
                 "language": lang_clean,
                 "updated_at": now,
             }
+            update_set = {
+                f"language_routes.{lang_clean}": route_entry,
+                "channel_id": channel_id,
+                "language": lang_clean,
+                "updated_at": now,
+            }
+            if invite_link:
+                update_set["invite_link"] = invite_link
+            if series_title:
+                update_set["series_title"] = series_title
+            if poster_url:
+                update_set["poster_url"] = poster_url
+
             await self.channel_mappings.update_one(
                 {"series_slug": series_slug},
                 {
-                    "$set": {
-                        f"language_routes.{lang_clean}": route_entry,
-                        "updated_at": now,
-                    },
+                    "$set": update_set,
                     "$setOnInsert": {
                         "series_slug": series_slug,
                         "series_title": series_title or series_slug,
-                        "channel_id": channel_id,
                         "invite_link": invite_link,
                         "poster_url": poster_url,
                         "auto_created": auto_created,
