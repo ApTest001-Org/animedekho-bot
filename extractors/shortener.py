@@ -38,7 +38,63 @@ _SHORTENER_DOMAINS: dict[str, str] = {
     "cuty.io": "cuty",
     "cutt.ly": "cuty",
     "cuty.me": "cuty",
+    "droplink.co": "droplink",
+    "droplink.net": "droplink",
+    "shrinkme.io": "shrinkme",
+    "shrinkme.net": "shrinkme",
+    "shrinke.me": "shrinkme",
+    "shareus.io": "shareus",
+    "shareus.in": "shareus",
+    "ouo.io": "ouo",
+    "ouo.press": "ouo",
+    "exe.io": "exe",
+    "exey.io": "exe",
+    "exe.app": "exe",
+    "filepress.site": "filepress",
+    "filepress.store": "filepress",
 }
+
+_AD_AND_TRACKING_DOMAINS = {
+    "doubleclick.net", "googleadservices.com", "adnxs.com", "popcash.net",
+    "popads.net", "propellerads.com", "exoclick.com", "adsterra.com",
+    "trafficjunky.com", "bet365.com", "1xbet.com", "dafabet.com",
+    "yllix.com", "clickadu.com", "adtrue.com",
+}
+
+
+def detect_protection_challenge(html: str) -> str | None:
+    """
+    Detect anti-bot CAPTCHA or Cloudflare Turnstile challenge on the page (Issue #19).
+    Returns challenge name if detected, else None.
+    """
+    if not html:
+        return None
+    if "challenges.cloudflare.com/turnstile" in html or "cf-turnstile" in html:
+        return "Cloudflare Turnstile"
+    if "google.com/recaptcha" in html or "class=\"g-recaptcha\"" in html or "class='g-recaptcha'" in html or "grecaptcha" in html:
+        return "Google reCAPTCHA"
+    if "hcaptcha.com" in html or "class=\"h-captcha\"" in html or "class='h-captcha'" in html:
+        return "hCaptcha"
+    if "cf-browser-verification" in html or "cf_chl_prog" in html or ("Just a moment..." in html and "Cloudflare" in html):
+        return "Cloudflare Challenge"
+    return None
+
+
+def is_valid_media_destination(url: str) -> bool:
+    """
+    Verify that resolved URL is not a known tracking/ad URL or loopback (Issue #19).
+    """
+    if not url or not url.startswith("http"):
+        return False
+    try:
+        host = urlparse(url).netloc.lower()
+        if is_shortener(url):
+            return False
+        if any(ad_dom in host for ad_dom in _AD_AND_TRACKING_DOMAINS):
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def is_shortener(url: str) -> bool:
@@ -78,14 +134,39 @@ async def bypass_shortener(url: str, *, http_client=None) -> str | None:
     log.info("Shortener bypass [%s] for %s", handler, url)
 
     try:
+        res = None
         if handler == "gplinks":
-            return await _bypass_gplinks(url, http_client)
+            res = await _bypass_gplinks(url, http_client)
         elif handler == "vshort":
-            return await _bypass_vshort(url, http_client)
+            res = await _bypass_vshort(url, http_client)
         elif handler == "cuty":
-            return await _bypass_cuty(url, http_client)
+            res = await _bypass_cuty(url, http_client)
+        elif handler == "droplink":
+            res = await _bypass_droplink(url, http_client)
+        elif handler == "shrinkme":
+            res = await _bypass_shrinkme(url, http_client)
+        elif handler == "shareus":
+            res = await _bypass_shareus(url, http_client)
+        elif handler == "ouo":
+            res = await _bypass_ouo(url, http_client)
+        elif handler == "exe":
+            res = await _bypass_exe(url, http_client)
+        elif handler == "filepress":
+            res = await _bypass_filepress(url, http_client)
         else:
-            return await _bypass_generic(url, http_client)
+            res = await _bypass_generic(url, http_client)
+
+        if res and is_valid_media_destination(res):
+            return res
+        elif res and is_shortener(res) and res != url:
+            log.info("Chained shortener detected: %s -> %s, following...", url[:60], res[:60])
+            chained = await bypass_shortener(res, http_client=http_client)
+            if chained and is_valid_media_destination(chained):
+                return chained
+        elif res:
+            log.info("Shortener returned target destination: %s", res[:80])
+            return res
+        return None
     except Exception as e:
         log.warning("Shortener bypass failed for %s: %s", url, e)
         return None
@@ -759,5 +840,244 @@ def _extract_encoded_var(html: str) -> str | None:
                 return decoded
         except Exception:
             continue
+
+    return None
+
+
+# ── Additional Dedicated Shortener Bypasses (Issue #19) ───────────────
+
+
+async def _bypass_adlinkfly(url: str, http_client, handler_name: str) -> str | None:
+    """
+    AdLinkFly-based shortener bypass (DropLink, ShrinkMe, Exe.io).
+    """
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+
+    html = await http_client.get_text_no_cache(url, headers={
+        "Referer": base + "/",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    })
+    if not html:
+        return None
+
+    challenge = detect_protection_challenge(html)
+    if challenge:
+        log.warning("[%s] Unsupported interactive %s challenge on %s", handler_name, challenge, url)
+        return None
+
+    for extractor in (_extract_meta_refresh, _extract_atob, _extract_js_redirect, _extract_encoded_var, _extract_data_attributes):
+        dest = extractor(html)
+        if dest and is_valid_media_destination(dest):
+            return dest
+
+    forms = re.finditer(
+        r'<form[^>]*action=["\']([^"\']*)["\'][^>]*method=["\']post["\'][^>]*>(.*?)</form>',
+        html, re.DOTALL | re.IGNORECASE
+    )
+
+    for form_match in forms:
+        action = form_match.group(1) or ""
+        form_body = form_match.group(2)
+
+        if not action.startswith("http"):
+            action = urljoin(url, action)
+
+        data = {}
+        for inp in re.finditer(r'<input[^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\']', form_body, re.I):
+            data[inp.group(1)] = inp.group(2)
+        for inp in re.finditer(r'<input[^>]*value=["\']([^"\']*)["\'][^>]*name=["\']([^"\']+)["\']', form_body, re.I):
+            data[inp.group(2)] = inp.group(1)
+
+        if not data:
+            continue
+
+        try:
+            resp_text = await http_client.post(
+                action,
+                data=data,
+                headers={
+                    "Referer": url,
+                    "Origin": base,
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                },
+            )
+            if resp_text:
+                try:
+                    resp_json = json.loads(resp_text)
+                    if isinstance(resp_json, dict) and resp_json.get("url"):
+                        target = resp_json["url"]
+                        if is_valid_media_destination(target) or is_shortener(target):
+                            return target
+                except Exception:
+                    pass
+
+            resp_html, final_url = await http_client.post_follow_redirects(
+                action, data=data, headers={"Referer": url, "Origin": base}
+            )
+            if final_url and (is_valid_media_destination(final_url) or is_shortener(final_url)) and final_url != url:
+                return final_url
+
+            if resp_html:
+                for extractor in (_extract_meta_refresh, _extract_atob, _extract_js_redirect):
+                    dest = extractor(resp_html)
+                    if dest and (is_valid_media_destination(dest) or is_shortener(dest)):
+                        return dest
+        except Exception as e:
+            log.debug("[%s] Form submit failed on %s: %s", handler_name, action, e)
+
+    return None
+
+
+async def _bypass_droplink(url: str, http_client) -> str | None:
+    return await _bypass_adlinkfly(url, http_client, "droplink")
+
+
+async def _bypass_shrinkme(url: str, http_client) -> str | None:
+    return await _bypass_adlinkfly(url, http_client, "shrinkme")
+
+
+async def _bypass_exe(url: str, http_client) -> str | None:
+    return await _bypass_adlinkfly(url, http_client, "exe")
+
+
+async def _bypass_ouo(url: str, http_client) -> str | None:
+    """
+    Ouo.io / Ouo.press bypass flow.
+    """
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+
+    html = await http_client.get_text_no_cache(url, headers={
+        "Referer": "https://google.com/",
+        "Accept": "text/html,application/xhtml+xml",
+    })
+    if not html:
+        return None
+
+    challenge = detect_protection_challenge(html)
+    if challenge:
+        log.warning("[ouo] Unsupported interactive %s challenge on %s", challenge, url)
+        return None
+
+    form_m = re.search(r'<form[^>]*action=["\']([^"\']+)["\'][^>]*>(.*?)</form>', html, re.DOTALL | re.IGNORECASE)
+    if form_m:
+        action = form_m.group(1)
+        body = form_m.group(2)
+        if not action.startswith("http"):
+            action = urljoin(url, action)
+
+        data = {}
+        for inp in re.finditer(r'<input[^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\']', body, re.I):
+            data[inp.group(1)] = inp.group(2)
+        for inp in re.finditer(r'<input[^>]*value=["\']([^"\']*)["\'][^>]*name=["\']([^"\']+)["\']', body, re.I):
+            data[inp.group(2)] = inp.group(1)
+
+        try:
+            resp_html, final_url = await http_client.post_follow_redirects(
+                action, data=data, headers={"Referer": url, "Origin": base}
+            )
+            if final_url and is_valid_media_destination(final_url) and final_url != url:
+                return final_url
+
+            if resp_html:
+                for extractor in (_extract_meta_refresh, _extract_atob, _extract_js_redirect):
+                    dest = extractor(resp_html)
+                    if dest and is_valid_media_destination(dest):
+                        return dest
+        except Exception as e:
+            log.debug("Ouo form POST failed: %s", e)
+
+    return None
+
+
+async def _bypass_shareus(url: str, http_client) -> str | None:
+    """
+    Shareus.io / Shareus.in bypass flow.
+    """
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+
+    html = await http_client.get_text_no_cache(url, headers={
+        "Referer": "https://google.com/",
+        "Accept": "text/html,application/xhtml+xml",
+    })
+    if not html:
+        return None
+
+    challenge = detect_protection_challenge(html)
+    if challenge:
+        log.warning("[shareus] Unsupported interactive %s challenge on %s", challenge, url)
+        return None
+
+    for extractor in (_extract_data_attributes, _extract_meta_refresh, _extract_atob, _extract_js_redirect, _extract_encoded_var):
+        dest = extractor(html)
+        if dest and is_valid_media_destination(dest):
+            return dest
+
+    qs = parse_qs(parsed.query)
+    short_id = qs.get("i", [""])[0] or qs.get("id", [""])[0]
+    if not short_id:
+        path_parts = [p for p in parsed.path.split("/") if p]
+        if path_parts:
+            short_id = path_parts[-1]
+
+    if short_id:
+        try:
+            api_url = f"{base}/api?shortid={short_id}"
+            res_text = await http_client.get_text_no_cache(api_url, headers={
+                "Referer": url,
+                "Origin": base,
+                "X-Requested-With": "XMLHttpRequest",
+            })
+            if res_text:
+                try:
+                    data = json.loads(res_text)
+                    if isinstance(data, dict):
+                        target = data.get("link") or data.get("url") or data.get("target")
+                        if target and is_valid_media_destination(target):
+                            return target
+                except Exception:
+                    pass
+        except Exception as e:
+            log.debug("Shareus API call failed: %s", e)
+
+    return None
+
+
+async def _bypass_filepress(url: str, http_client) -> str | None:
+    """
+    Filepress.site / Filepress.store bypass flow.
+    """
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+
+    html = await http_client.get_text_no_cache(url, headers={
+        "Referer": base + "/",
+        "Accept": "text/html,application/xhtml+xml",
+    })
+    if not html:
+        return None
+
+    challenge = detect_protection_challenge(html)
+    if challenge:
+        log.warning("[filepress] Unsupported interactive %s challenge on %s", challenge, url)
+        return None
+
+    for m in re.finditer(r'href=["\'](https?://drive\.google\.com/[^"\']+)["\']', html):
+        return m.group(1)
+
+    for m in re.finditer(r'src=["\'](https?://drive\.google\.com/[^"\']+)["\']', html):
+        return m.group(1)
+
+    for extractor in (_extract_data_attributes, _extract_js_redirect, _extract_atob, _extract_meta_refresh):
+        dest = extractor(html)
+        if dest and is_valid_media_destination(dest):
+            return dest
+
+    stream_m = re.search(r'["\'](https?://[^"\']+\.(?:mp4|mkv|m3u8)[^"\']*)["\']', html, re.I)
+    if stream_m:
+        return stream_m.group(1)
 
     return None
