@@ -23,7 +23,6 @@ log = logging.getLogger(__name__)
 
 
 async def callback_router(client: Client, query: CallbackQuery):
-    await query.answer()
     data = query.data
 
     user = query.from_user
@@ -32,6 +31,11 @@ async def callback_router(client: Client, query: CallbackQuery):
     if db and user_id and await db.is_banned(user_id):
         await query.answer("⛔ You are banned from using this bot.", show_alert=True)
         return
+
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
     try:
         if data == "m:main":
@@ -380,35 +384,70 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
     if not candidates or not has_exact or is_4k:
         found_match = False
 
-        # Step 1: Secondary - AnimeDrive (DEFAULT for 4K)
+        # Step 1: Primary File Sources via Multi-Source Scrapers (RareAnimes, ToonWorld4All, DeadToons, TOONo)
         try:
-            from extractors.animedrive import animedrive
-            log.info("Checking AnimeDrive for '%s' S%dE%d [%s]", series_title, season, ep_num, quality_pref)
-            ad_res = await animedrive.resolve_episode(series_title, season=season, episode=ep_num, quality_pref=quality_pref)
-            if ad_res and ad_res.get("url"):
-                ad_q = ad_res.get("quality", "").lower()
-                ad_srv = VideoServer(
-                    name="AnimeDrive",
-                    player_url=ad_res["url"],
+            from extractors.multisource import multi_source_manager
+            log.info("Checking multi-source manager for '%s' S%dE%d [%s]", series_title, season, ep_num, quality_pref)
+            ms_res = await multi_source_manager.resolve_episode_stream(
+                series_title=series_title,
+                season=season,
+                episode=ep_num,
+                quality_pref=quality_pref,
+                series_slug=series_slug,
+            )
+            if ms_res and ms_res.get("url"):
+                ms_q = ms_res.get("quality", quality_pref).lower()
+                ms_srv = VideoServer(
+                    name=ms_res.get("source", "MultiSource"),
+                    player_url=ms_res["url"],
                     is_resolved=True,
-                    qualities=[Quality(resolution=ad_res["quality"], url=ad_res["url"])],
+                    qualities=[Quality(resolution=ms_res.get("quality", quality_pref), url=ms_res["url"])],
                 )
-                if series_slug and not _poster_cache.get(series_slug):
+                if series_slug and not _poster_cache.get(series_slug) and ms_res.get("poster"):
                     from utils.anilist import resolve_best_poster
-                    res_p = await resolve_best_poster(series_title, ad_res.get("poster"))
+                    res_p = await resolve_best_poster(series_title, ms_res.get("poster"))
                     if res_p:
                         _poster_cache[series_slug] = res_p
-                if (is_4k and _is_4k_satisfying(ad_q)) or (not is_4k and ad_q == quality_pref.lower()):
-                    candidates.insert(0, (ad_srv, ad_srv.qualities[0]))
+                if (is_4k and _is_4k_satisfying(ms_q)) or (not is_4k and ms_q == quality_pref.lower()):
+                    candidates.insert(0, (ms_srv, ms_srv.qualities[0]))
                     has_exact = True
                     found_match = True
-                    log.info("AnimeDrive provided exact/4K stream [%s] for '%s' S%dE%d", ad_res["quality"], series_title, season, ep_num)
+                    log.info("%s provided exact/4K stream [%s] for '%s' S%dE%d", ms_res.get("source"), ms_res.get("quality"), series_title, season, ep_num)
                 else:
-                    candidates.append((ad_srv, ad_srv.qualities[0]))
+                    candidates.append((ms_srv, ms_srv.qualities[0]))
         except Exception as e:
-            log.warning("AnimeDrive resolution error: %s", e)
+            log.warning("Multi-source manager resolution error: %s", e)
 
-        # Step 2: Tertiary - ToonFlix
+        # Step 2: Fallback - AnimeDrive
+        if not candidates or not has_exact or (is_4k and not found_match):
+            try:
+                from extractors.animedrive import animedrive
+                log.info("Checking AnimeDrive fallback for '%s' S%dE%d [%s]", series_title, season, ep_num, quality_pref)
+                ad_res = await animedrive.resolve_episode(series_title, season=season, episode=ep_num, quality_pref=quality_pref)
+                if ad_res and ad_res.get("url"):
+                    ad_q = ad_res.get("quality", "").lower()
+                    ad_srv = VideoServer(
+                        name="AnimeDrive",
+                        player_url=ad_res["url"],
+                        is_resolved=True,
+                        qualities=[Quality(resolution=ad_res["quality"], url=ad_res["url"])],
+                    )
+                    if series_slug and not _poster_cache.get(series_slug):
+                        from utils.anilist import resolve_best_poster
+                        res_p = await resolve_best_poster(series_title, ad_res.get("poster"))
+                        if res_p:
+                            _poster_cache[series_slug] = res_p
+                    if (is_4k and _is_4k_satisfying(ad_q)) or (not is_4k and ad_q == quality_pref.lower()):
+                        candidates.insert(0, (ad_srv, ad_srv.qualities[0]))
+                        has_exact = True
+                        found_match = True
+                        log.info("AnimeDrive provided exact/4K stream [%s] for '%s' S%dE%d", ad_res["quality"], series_title, season, ep_num)
+                    else:
+                        candidates.append((ad_srv, ad_srv.qualities[0]))
+            except Exception as e:
+                log.warning("AnimeDrive resolution error: %s", e)
+
+        # Step 3: Fallback - ToonFlix
         if not candidates or not has_exact or (is_4k and not found_match):
             try:
                 from extractors.toonflix import toonflix
@@ -436,31 +475,6 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
                         candidates.append((tf_srv, tf_srv.qualities[0]))
             except Exception as e:
                 log.warning("ToonFlix resolution error: %s", e)
-
-        # Step 3: Multi-Source Scrapers (ToonWorld4All, RareAnimes, DeadToons, TOONo)
-        if not candidates or not has_exact:
-            try:
-                from extractors.multisource import multi_source_manager
-                log.info("Checking multi-source manager for '%s' S%dE%d [%s]", series_title, season, ep_num, quality_pref)
-                ms_res = await multi_source_manager.resolve_episode_stream(
-                    series_title=series_title,
-                    season=season,
-                    episode=ep_num,
-                    quality_pref=quality_pref,
-                    series_slug=series_slug,
-                )
-                if ms_res and ms_res.get("url"):
-                    ms_srv = VideoServer(
-                        name=ms_res.get("source", "MultiSource"),
-                        player_url=ms_res["url"],
-                        is_resolved=True,
-                        qualities=[Quality(resolution=ms_res.get("quality", quality_pref), url=ms_res["url"])],
-                    )
-                    candidates.insert(0, (ms_srv, ms_srv.qualities[0]))
-                    has_exact = True
-                    log.info("%s provided fallback stream candidate", ms_res.get("source"))
-            except Exception as e:
-                log.warning("Multi-source manager resolution error: %s", e)
 
     if not candidates:
         await _safe_edit(q, "⚠️ No downloadable URL found on any server.")

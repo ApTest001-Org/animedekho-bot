@@ -79,31 +79,15 @@ def require_approved(func):
 
         # Force sub check (owner bypasses)
         if not is_owner(user_id):
-            from bot.forcesub import check_subscription
-            from bot.database import db
-
-            channel_id = settings.bot.main_channel
-            if channel_id and not await check_subscription(client, user_id, channel_id):
-                # Get channel invite link
-                invite_link = None
-                if db:
-                    invite_link = await db.get_config("channel_invite_link")
-
-                text = "📢 You must join our channel to use this bot!"
-                if invite_link:
-                    markup = InlineKeyboardMarkup([[
-                        InlineKeyboardButton("Join Channel", url=invite_link),
-                    ]])
-                else:
-                    markup = None
-                    text += "\n\nPlease contact the owner for the channel link."
-
+            from bot.fsub import check_fsub
+            is_sub, fsub_text, fsub_markup = await check_fsub(client, user_id)
+            if not is_sub:
                 if isinstance(update, CallbackQuery):
-                    await update.answer(text, show_alert=True)
-                    if update.message:
-                        await update.message.reply_text(text, reply_markup=markup)
+                    await update.answer(fsub_text or "📢 Please join our channel to use this bot!", show_alert=True)
+                    if update.message and fsub_markup:
+                        await update.message.reply_text(fsub_text, reply_markup=fsub_markup)
                 elif isinstance(update, Message):
-                    await update.reply_text(text, reply_markup=markup)
+                    await update.reply_text(fsub_text, reply_markup=fsub_markup)
                 return
 
         return await func(client, update)

@@ -7,7 +7,7 @@ import re
 import time
 from typing import Any
 
-from bot.telegram import Client, enums, filters
+from bot.telegram import Client, enums, filters, errors
 from bot.telegram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 from config.settings import settings
@@ -237,6 +237,13 @@ async def cmd_broadcast(client: Client, message: Message):
         try:
             await client.send_message(chat_id=uid, text=text_to_send, parse_mode=enums.ParseMode.HTML)
             sent += 1
+        except errors.FloodWait as fw:
+            await asyncio.sleep(fw.value)
+            try:
+                await client.send_message(chat_id=uid, text=text_to_send, parse_mode=enums.ParseMode.HTML)
+                sent += 1
+            except Exception:
+                failed += 1
         except Exception as e:
             err_str = str(e).lower()
             if "blocked" in err_str or "user_deactivated" in err_str:
@@ -295,6 +302,13 @@ async def cmd_pbroadcast(client: Client, message: Message):
         try:
             await client.send_photo(chat_id=uid, photo=photo_id, caption=caption, parse_mode=enums.ParseMode.HTML)
             sent += 1
+        except errors.FloodWait as fw:
+            await asyncio.sleep(fw.value)
+            try:
+                await client.send_photo(chat_id=uid, photo=photo_id, caption=caption, parse_mode=enums.ParseMode.HTML)
+                sent += 1
+            except Exception:
+                failed += 1
         except Exception as e:
             if "blocked" in str(e).lower():
                 blocked += 1
@@ -385,19 +399,20 @@ async def cmd_fsub(client: Client, message: Message):
     if not db:
         return
 
-    parts = message.text.split(maxsplit=1)
-    if len(parts) > 1:
-        arg = parts[1].strip()
-        if arg.lower() in ("off", "disable", "none", "0"):
-            await db.set_fsub_channel(None)
-            await message.reply_text("✅ Force Subscribe (FSub) has been disabled.")
-            return
-        else:
-            # Set channel
-            chan_val = int(arg) if arg.lstrip("-").isdigit() else arg
-            await db.set_fsub_channel(chan_val)
-            await message.reply_text(f"✅ FSub channel updated to: <code>{chan_val}</code>", parse_mode=enums.ParseMode.HTML)
-            return
+    if message.text and message.text.strip().startswith("/fsub"):
+        parts = message.text.split(maxsplit=1)
+        if len(parts) > 1:
+            arg = parts[1].strip()
+            if arg.lower() in ("off", "disable", "none", "0"):
+                await db.set_fsub_channel(None)
+                await message.reply_text("✅ Force Subscribe (FSub) has been disabled.")
+                return
+            else:
+                # Set channel
+                chan_val = int(arg) if arg.lstrip("-").isdigit() else arg
+                await db.set_fsub_channel(chan_val)
+                await message.reply_text(f"✅ FSub channel updated to: <code>{chan_val}</code>", parse_mode=enums.ParseMode.HTML)
+                return
 
     # View status
     current_chan = await db.get_fsub_channel()
@@ -667,4 +682,24 @@ async def toggle_fsub_mod_callback(client: Client, query: CallbackQuery):
     await db.set_fsub_mod(new_st)
 
     await query.answer(f"FSub Timer Mode: {'ON' if new_st else 'OFF'}")
-    await cmd_fsub(client, query.message)
+    current_chan = await db.get_fsub_channel()
+
+    text = (
+        "📢 <b>Force Subscribe (FSub) System</b>\n\n"
+        f"• <b>Target Channel:</b> <code>{current_chan or 'Disabled'}</code>\n"
+        f"• <b>Timer Link Mode (/fsub_mod):</b> <code>{'ON (2 min expiring links)' if new_st else 'OFF (Standard links)'}</code>\n\n"
+        "<b>Commands:</b>\n"
+        "• <code>/fsub &lt;channel_id_or_username&gt;</code> — Set FSub channel\n"
+        "• <code>/fsub off</code> — Disable FSub check\n"
+        "• <code>/fsub_mod on</code> — Enable 2-minute expiring timer links\n"
+        "• <code>/fsub_mod off</code> — Use standard permanent links"
+    )
+    buttons = [
+        [
+            InlineKeyboardButton(f"Timer Mode: {'ON ✅' if new_st else 'OFF ❌'}", callback_data="toggle_fsub_mod"),
+        ]
+    ]
+    try:
+        await query.message.edit_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=InlineKeyboardMarkup(buttons))
+    except Exception:
+        pass

@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import time
 import uuid
+from glob import escape as glob_escape
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -362,7 +363,7 @@ async def n_m3u8dl_re_download(
                 await asyncio.sleep(3)
                 try:
                     total = sum(
-                        f.stat().st_size for f in Path(save_dir).glob(f"*{stem}*")
+                        f.stat().st_size for f in Path(save_dir).glob(f"*{glob_escape(stem)}*")
                         if f.is_file()
                     )
                     total += sum(f.stat().st_size for f in job_temp_dir.glob("**/*") if f.is_file())
@@ -700,6 +701,122 @@ async def validate_video_file(file_path: str, min_size_bytes: int = 500_000) -> 
         return False, f"Validation error: {e}", {}
 
 
+async def fix_or_verify_video_resolution(
+    file_path: str,
+    requested_quality: str,
+    meta: dict,
+    progress_msg: Message | None = None,
+) -> tuple[bool, str, dict]:
+    """
+    Validate that downloaded video resolution matches requested quality (Issue #20 - Bug 29).
+    If a higher resolution stream was downloaded (e.g., 1080p stream for 480p/720p request),
+    automatically transcode/downscale with FFmpeg to deliver the true requested resolution
+    and expected lightweight file size.
+    If the resolution is severely undersized (e.g., <=480p when 1080p was explicitly requested),
+    reject so multi-source fallbacks can try for true HD sources.
+    """
+    clean_q = requested_quality.lower().strip()
+    target_height = 0
+    if "2160" in clean_q or "4k" in clean_q:
+        target_height = 2160
+    elif "1080" in clean_q or "fhd" in clean_q:
+        target_height = 1080
+    elif "720" in clean_q or "hd" in clean_q or "hdrip" in clean_q:
+        target_height = 720
+    elif "480" in clean_q or "sd" in clean_q or "dvdrip" in clean_q:
+        target_height = 480
+    elif "360" in clean_q:
+        target_height = 360
+    elif "240" in clean_q:
+        target_height = 240
+
+    if not target_height:
+        return True, "", meta
+
+    w = int(meta.get("width") or 0)
+    h = int(meta.get("height") or 0)
+    if not w or not h:
+        return True, "", meta
+
+    actual_res = min(w, h)
+
+    needs_downscale = False
+    if target_height == 480 and actual_res > 520:
+        needs_downscale = True
+    elif target_height == 720 and actual_res > 800:
+        needs_downscale = True
+    elif target_height == 360 and actual_res > 400:
+        needs_downscale = True
+    elif target_height == 240 and actual_res > 280:
+        needs_downscale = True
+
+    if needs_downscale:
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if ffmpeg_bin:
+            log.info(
+                "Quality mismatch: requested %sp but got %dp (res %dx%d). Downscaling via FFmpeg...",
+                target_height, actual_res, w, h
+            )
+            if progress_msg:
+                try:
+                    await progress_msg.edit_text(
+                        f"⚙️ <b>Optimizing Resolution</b>\n"
+                        f"┌ 🎬 Downscaling to requested {target_height}p...\n"
+                        f"└ ⏳ Please wait...",
+                        parse_mode=enums.ParseMode.HTML,
+                    )
+                except Exception:
+                    pass
+
+            temp_scaled = str(Path(file_path).parent / f"scaled_{target_height}_{Path(file_path).name}")
+            cmd = [
+                ffmpeg_bin,
+                "-y",
+                "-i", file_path,
+                "-vf", f"scale=-2:{target_height}",
+                "-c:v", "libx264",
+                "-crf", "23",
+                "-preset", "veryfast",
+                "-c:a", "copy",
+                temp_scaled,
+            ]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+                if proc.returncode == 0 and os.path.exists(temp_scaled) and os.path.getsize(temp_scaled) > 100_000:
+                    os.replace(temp_scaled, file_path)
+                    valid, err, new_meta = await validate_video_file(file_path)
+                    if valid:
+                        log.info(
+                            "Downscale successful: new size %s, resolution %sx%s",
+                            _format_size(os.path.getsize(file_path)),
+                            new_meta.get("width"),
+                            new_meta.get("height"),
+                        )
+                        return True, "", new_meta
+                else:
+                    log.warning("FFmpeg downscale failed (exit %s): %s", proc.returncode, stderr.decode()[-200:])
+            except Exception as e:
+                log.warning("Downscale error: %s", e)
+            finally:
+                if os.path.exists(temp_scaled):
+                    try:
+                        os.remove(temp_scaled)
+                    except Exception:
+                        pass
+
+    if target_height >= 1080 and actual_res <= 540:
+        return False, f"Resolution mismatch: requested {target_height}p but got {actual_res}p", meta
+    if target_height >= 720 and actual_res <= 360:
+        return False, f"Resolution mismatch: requested {target_height}p but got {actual_res}p", meta
+
+    return True, "", meta
+
+
 # ── Unified Media Downloader ──────────────────────────────────────────
 
 
@@ -1030,6 +1147,40 @@ async def download_and_upload(
                 parse_mode=enums.ParseMode.HTML)
             return False, None
 
+        # Resolution Validation & Optimization (Issue #20 - Bug 29)
+        res_ok, res_err, meta = await fix_or_verify_video_resolution(
+            output_path, quality, meta, progress_msg=progress_msg
+        )
+        if not res_ok:
+            log.warning("Downloaded video failed resolution validation: %s (error: %s)", filename, res_err)
+            try:
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+            except Exception:
+                pass
+
+            from bot.database import db
+            if db:
+                try:
+                    await db.log_download_failure(
+                        title=title, quality=quality, source=referer or "stream",
+                        error=f"Resolution rejected: {res_err}", user_id=chat_id,
+                    )
+                except Exception:
+                    pass
+
+            await progress_msg.edit_text(
+                f"❌ <b>Incorrect Quality Downloaded</b>\n"
+                f"┌ 📺 {title}\n"
+                f"├ ⚠️ Reason: {res_err[:80]}\n"
+                f"└ 🔄 Discarded wrong resolution, retrying fallback...",
+                parse_mode=enums.ParseMode.HTML)
+            return False, None
+
+        vid_duration = int(meta.get("duration") or 0)
+        vid_width = int(meta.get("width") or 0)
+        vid_height = int(meta.get("height") or 0)
+
         # Auto Thumbnail Generator (Issue #8 - Point 9)
         # If user has not uploaded an explicit custom thumbnail, generate a branded 1280x720 HD thumbnail
         if not custom_thumb_path:
@@ -1157,6 +1308,9 @@ async def download_and_upload(
                             thumb=thumb_path,
                             file_name=filename,
                             caption=f"📺 {title} [{quality}] #dump",
+                            duration=vid_duration,
+                            width=vid_width,
+                            height=vid_height,
                             supports_streaming=True,
                             progress=_upload_progress,
                         )
@@ -1187,6 +1341,9 @@ async def download_and_upload(
                                     video=fid,
                                     caption=caption_text,
                                     reply_markup=markup_obj,
+                                    duration=vid_duration,
+                                    width=vid_width,
+                                    height=vid_height,
                                     supports_streaming=True,
                                 )
                             except Exception:
@@ -1235,6 +1392,9 @@ async def download_and_upload(
                         file_name=filename,
                         caption=caption_text,
                         reply_markup=markup_obj,
+                        duration=vid_duration,
+                        width=vid_width,
+                        height=vid_height,
                         supports_streaming=True,
                         progress=_upload_progress,
                     )
@@ -1268,6 +1428,9 @@ async def download_and_upload(
                                 chat_id=chat_id,
                                 video=fid,
                                 caption=f"📺 {title} [{quality}]",
+                                duration=vid_duration,
+                                width=vid_width,
+                                height=vid_height,
                                 supports_streaming=True,
                             )
                         except Exception:
@@ -1374,7 +1537,7 @@ async def download_and_upload(
                 pass
         try:
             stem = Path(output_path).stem
-            for f in _TEMP_BASE.glob(f"*{stem}*"):
+            for f in _TEMP_BASE.glob(f"*{glob_escape(stem)}*"):
                 if f.is_file():
                     f.unlink(missing_ok=True)
                 elif f.is_dir():

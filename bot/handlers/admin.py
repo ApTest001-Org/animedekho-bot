@@ -288,6 +288,12 @@ async def delete_callback(client: Client, query):
     from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
     from utils.helpers import slug_to_title
     from bot.telegram import enums as pe
+    from bot.auth import is_owner
+
+    user = query.from_user
+    if not user or not is_owner(user.id):
+        await query.answer("⛔ Access denied: Owner only.", show_alert=True)
+        return
 
     if not db:
         await query.answer("DB not ready", show_alert=True)
@@ -751,8 +757,8 @@ async def cmd_mapchannel(client: Client, message: Message):
 
     for token in args:
         t = token.strip()
-        if t.lstrip("-").isdigit():
-            channel_id = int(t)
+        if (t.startswith("-100") and t[4:].isdigit()) or (t.startswith("-") and len(t) >= 9 and t[1:].isdigit()) or (len(t) >= 12 and t.isdigit()):
+            channel_id = int(t) if t.startswith("-") else int(f"-100{t}")
         elif t.startswith("http://") or t.startswith("https://") or t.startswith("t.me"):
             invite_link = t
         elif t.lower() in audio_keys:
@@ -959,10 +965,25 @@ async def cmd_channels(client: Client, message: Message):
         audio_str = f" | Audio: <code>{audio.upper()}</code>" if audio else ""
         lines.append(f"• <b>{title}</b>\n  Default ID: <code>{cid}</code> | {link_str}{audio_str} | Slug: <code>{c.get('series_slug')}</code>{routes_str}")
 
-    text = f"📋 <b>Mapped Series Channels ({len(channels)}):</b>\n\n" + "\n\n".join(lines)
-    if len(text) > 4000:
-        text = text[:4000] + "\n..."
-    await message.reply_text(text, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True)
+    header = f"📋 <b>Mapped Series Channels ({len(channels)}):</b>\n\n"
+    chunks = []
+    current_chunk = header
+
+    for line in lines:
+        if len(current_chunk) + len(line) + 2 > 3900:
+            chunks.append(current_chunk)
+            current_chunk = f"📋 <b>Mapped Series Channels (cont.):</b>\n\n{line}"
+        else:
+            if current_chunk == header:
+                current_chunk += line
+            else:
+                current_chunk += "\n\n" + line
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    for chunk in chunks:
+        await message.reply_text(chunk, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True)
 
 
 # ── Health, Diagnostics & System Monitoring ──────────────────────

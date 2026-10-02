@@ -14,6 +14,14 @@ from utils.helpers import clean_title, slug_to_title
 from utils.anilist import is_valid_poster_url
 
 
+def _base_url() -> str:
+    try:
+        from config.settings import settings
+        return settings.site.base_url.rstrip("/")
+    except Exception:
+        return "https://animedekho.app"
+
+
 # ── Regex patterns ────────────────────────────────────────────────
 RE_SERIES_URL = re.compile(
     r"(?:https?://[^/]+)?/series-hindi/([^/?#]+)/?",
@@ -183,7 +191,7 @@ def parse_series_detail(html: str, slug: str) -> Series:
 
     return Series(
         title=title, slug=slug,
-        url=f"https://animedekho.app/series-hindi/{slug}/",
+        url=f"{_base_url()}/series-hindi/{slug}/",
         description=desc[:800], poster=poster,
         genres=genres[:10], seasons=seasons,
     )
@@ -237,14 +245,16 @@ def parse_episode_page(html: str, ep_slug: str) -> Episode:
     # If no servers from bx-lst, build from known trdekho IDs
     if not servers and post_id:
         from config.settings import settings
+        base = _base_url()
         for sid, sname in settings.site.server_ids.items():
-            proxy = f"https://animedekho.app/?trdekho={sid}&trid={post_id}&trtype=2"
-            servers.append(VideoServer(name=sname, server_id=sid, proxy_url=proxy))
+            proxy = f"{base}/?trdekho={sid}&trid={post_id}&trtype=2"
+            int_sid = int(sid) if str(sid).isdigit() else 0
+            servers.append(VideoServer(name=sname, server_id=int_sid, proxy_url=proxy))
 
     return Episode(
         number=ep_num, slug=ep_slug, season=season,
         title=title, post_id=post_id, servers=servers,
-        page_url=f"https://animedekho.app/epi/{ep_slug}/",
+        page_url=f"{_base_url()}/epi/{ep_slug}/",
     )
 
 
@@ -305,13 +315,15 @@ def parse_movie_page(html: str, slug: str) -> Movie:
 
     if not servers and post_id:
         from config.settings import settings
+        base = _base_url()
         for sid, sname in settings.site.server_ids.items():
-            proxy = f"https://animedekho.app/?trdekho={sid}&trid={post_id}&trtype=2"
-            servers.append(VideoServer(name=sname, server_id=sid, proxy_url=proxy))
+            proxy = f"{base}/?trdekho={sid}&trid={post_id}&trtype=2"
+            int_sid = int(sid) if str(sid).isdigit() else 0
+            servers.append(VideoServer(name=sname, server_id=int_sid, proxy_url=proxy))
 
     return Movie(
         title=title, slug=slug,
-        url=f"https://animedekho.app/movie-hindi/{slug}/",
+        url=f"{_base_url()}/movie-hindi/{slug}/",
         description=desc[:800], poster=poster,
         genres=genres[:10], post_id=post_id, servers=servers,
     )

@@ -521,14 +521,33 @@ class LibraryManager:
                             reply_markup=markup,
                         )
                     else:
-                        await self.client.edit_message_text(
-                            chat_id=self.channel,
-                            message_id=msg_id,
-                            text=caption[:CAPTION_LIMIT],
-                            parse_mode=enums.ParseMode.HTML,
-                            disable_web_page_preview=True,
-                            reply_markup=markup,
-                        )
+                        poster_path = None
+                        if poster_url:
+                            poster_path = await _download_poster(poster_url)
+                        if poster_path:
+                            try:
+                                from bot.telegram.types import InputMediaPhoto
+                                await self.client.edit_message_media(
+                                    chat_id=self.channel,
+                                    message_id=msg_id,
+                                    media=InputMediaPhoto(poster_path, caption=caption[:CAPTION_LIMIT], parse_mode=enums.ParseMode.HTML),
+                                    reply_markup=markup,
+                                )
+                                entry["has_poster"] = True
+                            finally:
+                                try:
+                                    os.remove(poster_path)
+                                except Exception:
+                                    pass
+                        else:
+                            await self.client.edit_message_text(
+                                chat_id=self.channel,
+                                message_id=msg_id,
+                                text=caption[:CAPTION_LIMIT],
+                                parse_mode=enums.ParseMode.HTML,
+                                disable_web_page_preview=True,
+                                reply_markup=markup,
+                            )
                     await self.db.library.update_one(
                         {"_id": entry["_id"]},
                         {"$set": {
@@ -537,6 +556,7 @@ class LibraryManager:
                             "qualities": sorted_qualities,
                             "updated_at": now,
                             "poster_url": poster_url or entry.get("poster_url"),
+                            "has_poster": bool(entry.get("has_poster", False)),
                         }},
                     )
                 except Exception as e:
@@ -620,121 +640,57 @@ class LibraryManager:
         series_slug: str = "",
         post_style: str = "classic",
     ) -> str:
-        import html as htmlmod
-        title_esc = htmlmod.escape(title)
-        quality_str = " | ".join(qualities) if qualities else "480p | 720p | 1080p"
-
-        slug = series_slug or (channel_mapping.get("series_slug", "") if channel_mapping else "")
-        from utils.helpers import encode_file_param
-        sec_slug = encode_file_param(f"join_{slug}") if slug else ""
-        join_deep = f"https://t.me/{self.bot_username}?start={sec_slug}" if sec_slug else ""
-
-        if is_movie:
-            # Issue #12 Point 10: Main Library Movie Post with Telegram Premium Custom Emojis
-            star_emoji = get_emoji("star", "🌟")
-            movie_emoji = get_emoji("movie", "🏷")
-            audio_emoji = get_emoji("audio", "🔊")
-            qual_emoji = get_emoji("quality", "📷")
-            genres_emoji = get_emoji("genres", "🎭")
-            chan_emoji = get_emoji("channel", "➽")
-            arrow_emoji = get_emoji("arrow", "👉")
-
-            rating = "8.1"
-            genres_str = "#Action, #Drama, #Supernatural"
-            audio_str = "Multi Audio [Hindi, Tamil, Telugu, English, Japanese]"
-            channel_handle = f"@{self.bot_username}"
-
-            try:
-                from utils.anilist import _meta_cache
-                cached_meta = _meta_cache.get(title) or _meta_cache.get(series_slug)
-                if cached_meta:
-                    if cached_meta.get("averageScore"):
-                        rating = f"{cached_meta['averageScore'] / 10.0:.1f}"
-                    if cached_meta.get("genres"):
-                        genres_str = ", ".join(f"#{g.replace(' ', '')}" for g in cached_meta["genres"][:4])
-            except Exception:
-                pass
-
-            if channel_mapping and channel_mapping.get("invite_link"):
-                channel_handle = channel_mapping.get("invite_link")
-            elif self.channel:
-                from config import Config
-                main_link = getattr(Config, "MAIN_CHANNEL_LINK", "")
-                if main_link:
-                    channel_handle = main_link
-
-            quality_display = ", ".join(qualities) if qualities else "480p, 720p, 1080p, 4K"
-
-            caption = (
-                f"<b>‣ {title_esc} #WEB-DL {arrow_emoji}</b>\n\n"
-                f"<blockquote><b>╭───────────────────</b>\n"
-                f"<b>├ {star_emoji} Ratings - {rating} IMDB</b>\n"
-                f"<b>├ {movie_emoji} Movie - 01 | Movie</b>\n"
-                f"<b>├ {audio_emoji} Audio - {audio_str} | #Official</b>\n"
-                f"<b>├ {qual_emoji} Quality - {quality_display}</b>\n"
-                f"<b>├ {genres_emoji} Genres: {genres_str}</b>\n"
-                f"<b>╰───────────────────</b></blockquote>\n\n"
-                f"<b>{chan_emoji} Cʜᴀɴɴᴇʟ : {channel_handle}</b>"
-            )
-            return caption
-
-        if post_style == "modern":
-            star_emoji = get_emoji("star", "🌀")
-            season_str = "01"
-            for ep in episodes:
-                m = re.match(r"S(\d+)E(\d+)", ep, re.IGNORECASE)
-                if m:
-                    season_str = f"{int(m.group(1)):02d}"
-                    break
-            genres_str = "Action, Drama, Fantasy, Anime"
-            duration_str = "24 min/ep"
-            branding = f"@{self.bot_username}"
-
-            return (
-                f"<b>{title_esc}</b> ❞\n\n"
-                f"┌ <b>TYPE:</b> Series\n"
-                f"📁 <b>DURATION:</b> {duration_str}\n"
-                f"{star_emoji} <b>Rating:</b> 80%\n"
-                f"📋 <b>STATUS:</b> RELEASING\n"
-                f"⭕ <b>EPISODES:</b> {len(episodes)}\n"
-                f"❦ <b>SEASON:</b> {season_str}\n"
-                f"♡ <b>GENRES:</b> {genres_str}\n"
-                f"└───────────────\n"
-                f"➥ <b>{branding}</b>"
-            )
-
-        channel_line = ""
-
-        # Group episodes by season
-        seasons: dict[int, list[int]] = {}
+        """
+        Format clean channel post caption per Issue #20 Bug 33:
+        <b><blockquote>• Episodes,- | S0
+        • Audio track,-  Dub | #Official 
+        • Quality - 
+        ━━━━━━━━━━━━━━━━━━━━━━━━━</blockquote></b> 
+        <b>➥ @Channel</b>
+        """
+        # Extract season and episodes info
+        s_num = 1
+        ep_numbers = []
         for ep in episodes:
             m = re.match(r"S(\d+)E(\d+)", ep, re.IGNORECASE)
             if m:
-                s, e = int(m.group(1)), int(m.group(2))
-                seasons.setdefault(s, []).append(e)
+                s_num = int(m.group(1))
+                ep_numbers.append(int(m.group(2)))
 
-        ep_lines = []
-        for s_num in sorted(seasons.keys()):
-            eps = sorted(seasons[s_num])
-            if len(eps) <= 3:
-                ep_str = ", ".join(str(e) for e in eps)
+        if is_movie:
+            ep_part = "01 | Movie"
+        elif ep_numbers:
+            ep_numbers.sort()
+            if len(ep_numbers) > 1:
+                ep_part = f"{ep_numbers[0]:02d}-{ep_numbers[-1]:02d} | S{s_num:02d}"
             else:
-                ep_str = f"{eps[0]}-{eps[-1]}"
-            ep_lines.append(f"Season {s_num}: Episode {ep_str}")
+                ep_part = f"{ep_numbers[0]:02d} | S{s_num:02d}"
+        else:
+            ep_part = f"{len(episodes) or 1:02d} | S{s_num:02d}"
 
-        ep_info = "\n".join(f"➥ {line}" for line in ep_lines) if ep_lines else f"➥ {len(episodes)} episode(s)"
-        audio = "Multi Audio (Japanese, English & Hindi)"
+        # Audio track
+        audio_name = (channel_mapping.get("language") if channel_mapping else "") or "Hindi"
+        audio_display = f"{audio_name.capitalize()} Dub"
+
+        # Quality display
+        quality_display = ", ".join(qualities) if qualities else "480p, 720p, 1080p"
+
+        # Channel handle / branding
+        from config import Config
+        chan_handle = getattr(Config, "MAIN_CHANNEL_LINK", "") or f"@{self.bot_username}"
+        if chan_handle.startswith("https://t.me/"):
+            chan_tag = "@" + chan_handle.removeprefix("https://t.me/").lstrip("+")
+        elif chan_handle.startswith("@"):
+            chan_tag = chan_handle
+        else:
+            chan_tag = f"@{self.bot_username}"
 
         caption = (
-            f"◆ {title_esc} ◆ ❞\n"
-            f"⟐━━━━━━━━━━━━━━━━━⟐\n"
-            f"{ep_info}\n"
-            f"➥ Qᴜᴀʟɪᴛʏ:- {quality_str}\n"
-            f"➥ Aᴜᴅɪᴏ:- {audio}\n"
-            f"{channel_line}"
-            f"➥ Tᴏᴛᴀʟ:- {len(episodes)} {'file' if len(episodes) == 1 else 'files'}\n"
-            f"⟐━━━━━━━━━━━━━━━━━⟐\n"
-            f"⟲ Pᴏᴡᴇʀᴇᴅ ʙʏ:- @{self.bot_username}"
+            f"<b><blockquote>• Episodes,- {ep_part}\n"
+            f"• Audio track,- {audio_display} | #Official\n"
+            f"• Quality - {quality_display}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━</blockquote></b>\n"
+            f"<b>➥ {chan_tag}</b>"
         )
         return caption
 
@@ -748,17 +704,26 @@ class LibraryManager:
         album_mode: str = "channel",
     ) -> InlineKeyboardMarkup:
         """
-        Build inline buttons for library album post.
-        Per Issue #16:
-        Main Channel Post must ONLY include the private anime channel join button (🚀 Open Channel).
-        Direct Get File, qualities (📥 720p, etc.) and DOWNLOAD NETWORK are completely removed from main channel posts.
+        Build inline buttons for library album post per Issue #20 (Points 31 & 33).
+        Only available qualities as buttons linking directly to secure deep-links:
+        [ 480p ] [ 720p ] [ 1080p ]
         """
-        slug_for_join = series_slug or (channel_mapping.get("series_slug", "") if channel_mapping else "")
         from utils.helpers import encode_file_param
-        sec_join = encode_file_param(f"join_{slug_for_join or series_slug}")
-        join_deep = f"https://t.me/{self.bot_username}?start={sec_join}"
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚀 Open Channel", url=join_deep)]
+        buttons = []
+        row = []
+        for q in qualities:
+            ep_key = "movie" if is_movie else "all"
+            sec_param = encode_file_param(f"get_{series_slug}_{q}_{ep_key}")
+            deep_link = f"https://t.me/{self.bot_username}?start={sec_param}"
+            row.append(InlineKeyboardButton(q, url=deep_link))
+            if len(row) == 3:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+
+        return InlineKeyboardMarkup(buttons) if buttons else InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚡ Open Bot", url=f"https://t.me/{self.bot_username}?start=start")]
         ])
 
     async def get_file(self, series_slug: str, quality: str, episode_key: str) -> str | None:

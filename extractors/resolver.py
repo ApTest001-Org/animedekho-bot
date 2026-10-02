@@ -96,6 +96,9 @@ async def get_m3u8_qualities(m3u8_url: str) -> list[Quality]:
         headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
             
         content = await http_client.get(m3u8_url, headers=headers, ttl=60)
+        if not content:
+            log.warning("No content returned from m3u8 %s", m3u8_url)
+            return [Quality(resolution="auto", url=m3u8_url, label="Auto")]
         # Log full m3u8 for debugging audio tracks
         log.info("Master m3u8 content:\n%s", content[:2000])
         qualities = parse_m3u8_qualities(content, m3u8_url)
@@ -117,6 +120,8 @@ def parse_m3u8_qualities(m3u8_content: str, base_url: str) -> list[Quality]:
     to extract available resolutions.
     """
     qualities: list[Quality] = []
+    if not m3u8_content:
+        return qualities
     lines = m3u8_content.strip().split("\n")
 
     for i, line in enumerate(lines):
@@ -212,6 +217,8 @@ def _unpack_packed_js(html: str) -> str | None:
 
     We replicate the unpacking logic in pure Python.
     """
+    if not html:
+        return None
     # Find all packed blocks in the page
     packed_re = re.compile(
         r"""eval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e\s*,\s*[dr]\s*\)"""
@@ -290,6 +297,8 @@ async def _resolve_packed_player(url: str) -> dict | None:
        and search the unpacked JS for stream URLs.
     """
     html = await http_client.get(url, ttl=60)
+    if not html:
+        return None
 
     # Try plain-text patterns first
     result = _scan_for_stream(html)
@@ -313,6 +322,8 @@ def _scan_for_stream(text: str) -> dict | None:
     Priority: master playlist > generic m3u8 > mp4.
     Collects ALL m3u8 URLs and picks the best one (master playlist preferred).
     """
+    if not text:
+        return None
     all_m3u8: list[str] = []
     
     # Collect ALL m3u8 URLs from common patterns
@@ -383,6 +394,8 @@ async def _resolve_dood(url: str) -> dict | None:
 async def _resolve_streamtape(url: str) -> dict | None:
     """Streamtape extractor."""
     html = await http_client.get(url, ttl=60)
+    if not html:
+        return None
     m = re.search(
         r"getElementById\('robotlink'\)\.innerHTML\s*=\s*'([^']+)'\s*\+\s*\('([^']+)'\)",
         html,
@@ -396,6 +409,8 @@ async def _resolve_streamtape(url: str) -> dict | None:
 async def _resolve_generic(url: str) -> dict | None:
     """Last resort — scan page for any m3u8/mp4 URL."""
     html = await http_client.get(url, ttl=60)
+    if not html:
+        return None
     return _scan_for_stream(html)
 
 async def _resolve_vidstream_sidecar(url: str) -> dict | None:

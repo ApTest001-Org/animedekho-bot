@@ -292,26 +292,33 @@ async def cmd_settings(client: Client, message: Message):
 
 async def settings_callback(client: Client, query: CallbackQuery):
     """Handle settings button toggle clicks."""
+    data = query.data
+
+    if data == "settings_action:close":
+        try:
+            await query.message.delete()
+        except Exception:
+            try:
+                await query.message.edit_text("<i>Panel closed.</i>", parse_mode=enums.ParseMode.HTML)
+            except Exception:
+                pass
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        return
+
     user = query.from_user
     if not user or not is_owner(user.id):
         await query.answer("⛔ Owner/Admin only action.", show_alert=True)
         return
 
-    data = query.data
     from bot.database import db
     if not db:
         await query.answer("⚠️ Database not connected.", show_alert=True)
         return
 
     alert_msg = "Updated!"
-
-    if data == "settings_action:close":
-        try:
-            await query.message.delete()
-        except Exception:
-            await query.message.edit_text("<i>Settings panel closed.</i>", parse_mode=enums.ParseMode.HTML)
-        await query.answer()
-        return
 
     if data == "set_toggle:refresh":
         alert_msg = "Refreshed!"

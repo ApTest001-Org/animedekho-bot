@@ -37,8 +37,8 @@ class AnimeDekhoAPI:
         self._nonce = None
         urls_to_try = [
             f"{cfg.base_url}/home/",
-            f"{cfg.base_url}/series-hindi/",
-            f"{cfg.base_url}/movie-hindi/",
+            f"{cfg.base_url}{cfg.series_path}/",
+            f"{cfg.base_url}{cfg.movies_path}/",
             f"{cfg.base_url}/",
         ]
         last_error = None
@@ -223,7 +223,7 @@ class AnimeDekhoAPI:
         return parse_episode_page(html, ep_slug)
 
     async def get_movie(self, slug: str) -> Movie:
-        url = f"{cfg.base_url}/movie-hindi/{slug}/"
+        url = f"{cfg.base_url}{cfg.movies_path}/{slug}/"
         html = await http_client.get(url)
 
         # Same verification shortlink flow as episodes

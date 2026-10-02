@@ -390,19 +390,24 @@ async def _handle_file_request(client: Client, message: Message, param: str):
     # Parse: get_<slug>_<quality>_<ep_key>
     raw = param[4:]  # strip "get_"
 
-    # Match episode key at the end (S\d+E\d+|movie|all)
+    # Match episode key at the end (S\d+E\d+|movie|all|\d+) with extended quality formats (Issue #20 - Bug 19)
     m = re.match(
-        r"^(.+?)_(480p|720p|1080p|1080p\s*hq|1080p\s*hq\s*x265|4k|2160p|\d+p|auto)_(s\d+e\d+|movie|all)$",
+        r"^(.+?)_((?:480|720|1080|2160|\d{3,4})p?(?:[\s_.-]?(?:hq|hevc|x265|x264|10-?bit|web-?dl|hdrip|dvdrip))*|4k|auto)_(s\d+e\d+|movie|all|\d+)$",
         raw,
         re.IGNORECASE,
     )
-    if not m:
-        await message.reply_text("⚠️ Invalid file link format.")
-        return
-
-    series_slug = m.group(1)
-    quality = m.group(2)
-    episode_key = m.group(3)
+    if m:
+        series_slug = m.group(1)
+        quality = m.group(2)
+        episode_key = m.group(3)
+    else:
+        # Fallback to rsplit: <slug>_<quality>_<episode_key>
+        parts = raw.rsplit("_", 2)
+        if len(parts) == 3 and re.match(r"^(s\d+e\d+|movie|all|\d+)$", parts[2], re.IGNORECASE):
+            series_slug, quality, episode_key = parts[0], parts[1], parts[2]
+        else:
+            await message.reply_text("⚠️ Invalid file link format.")
+            return
 
     import html as htmlmod
     from utils.helpers import slug_to_title

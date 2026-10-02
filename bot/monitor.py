@@ -139,9 +139,9 @@ class EpisodeMonitorService:
 
         # Calculate total episodes currently available on site
         all_episodes = []
-        for s in series_data.seasons:
+        for s in series_data.seasons.values():
             for ep in s.episodes:
-                all_episodes.append((s.season_number, ep))
+                all_episodes.append((s.number, ep))
 
         # Update last known count in DB
         await db.update_monitored_series_check(series_slug, len(all_episodes))
@@ -326,10 +326,11 @@ class EpisodeMonitorService:
                             ),
                             parse_mode=enums.ParseMode.HTML,
                         )
-                        if fail_msg and auto_delete_service:
-                            auto_delete_service.schedule_deletion(
+                        if fail_msg and auto_delete_service and self.client:
+                            await auto_delete_service.schedule_deletion(
+                                client=self.client,
                                 chat_id=fail_msg.chat.id,
-                                message_ids=[fail_msg.id],
+                                message_id=fail_msg.id,
                                 custom_seconds=120 * 3600,
                             )
                     except Exception as fe:

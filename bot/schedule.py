@@ -7,6 +7,7 @@ import re
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any
+import aiohttp
 
 from bot.telegram import enums
 from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -126,7 +127,7 @@ class ScheduleService:
                     ANILIST_GRAPHQL_URL,
                     json=payload,
                     headers={"Content-Type": "application/json", "User-Agent": "AnimeDekho/1.0"},
-                    timeout=10,
+                    timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -230,8 +231,10 @@ class ScheduleService:
                 today_hindi.append(s)
 
         # 2. Fetch popular Japanese releases from AniList for broader schedule coverage
-        now = int(time.time())
-        start_of_day = now - (now % 86400)
+        ist = timezone(timedelta(hours=5, minutes=30))
+        now_ist = datetime.now(ist)
+        start_of_day_dt = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_of_day = int(start_of_day_dt.timestamp())
         end_of_day = start_of_day + 86400
         anilist_sched = await self.fetch_schedule(start_of_day, end_of_day, per_page=20)
 
@@ -247,7 +250,8 @@ class ScheduleService:
             if s.get("day", "").strip().lower() == target_day_name or "daily" in s.get("day", "").strip().lower()
         ]
 
-        now_dt = datetime.now(timezone.utc)
+        ist = timezone(timedelta(hours=5, minutes=30))
+        now_dt = datetime.now(ist)
         current_weekday = now_dt.weekday()
         days_diff = day_index - current_weekday
         target_dt = (now_dt + timedelta(days=days_diff)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -257,11 +261,14 @@ class ScheduleService:
 
         return day_hindi + anilist_sched
 
-    async def get_upcoming_schedule(self, days: int = 30) -> list[dict]:
+    async def get_upcoming_schedule(self, days: int = 30, hours: int | None = None) -> list[dict]:
         """Get upcoming anime schedule, including upcoming Hindi dub schedule."""
         hindi_sched = await self.fetch_animedubhindi_schedule()
         now = int(time.time())
-        end_ts = now + (days * 86400)
+        if hours is not None:
+            end_ts = now + (hours * 3600)
+        else:
+            end_ts = now + (days * 86400)
         anilist_sched = await self.fetch_schedule(now, end_ts, per_page=30)
         return hindi_sched + anilist_sched
 

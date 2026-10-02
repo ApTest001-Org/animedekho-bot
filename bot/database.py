@@ -583,30 +583,34 @@ class Database:
             }
             update_set = {
                 f"language_routes.{lang_clean}": route_entry,
-                "channel_id": channel_id,
-                "language": lang_clean,
                 "updated_at": now,
             }
-            if invite_link:
-                update_set["invite_link"] = invite_link
             if series_title:
                 update_set["series_title"] = series_title
             if poster_url:
                 update_set["poster_url"] = poster_url
 
+            existing = await self.channel_mappings.find_one({"series_slug": series_slug})
+            if existing and (existing.get("channel_id") == channel_id or not existing.get("language")):
+                update_set["language"] = lang_clean
+
+            set_on_insert = {
+                "series_slug": series_slug,
+                "series_title": series_title or series_slug,
+                "channel_id": channel_id,
+                "invite_link": invite_link,
+                "language": lang_clean,
+                "poster_url": poster_url,
+                "auto_created": auto_created,
+                "created_by": created_by,
+                "created_at": now,
+            }
+
             await self.channel_mappings.update_one(
                 {"series_slug": series_slug},
                 {
                     "$set": update_set,
-                    "$setOnInsert": {
-                        "series_slug": series_slug,
-                        "series_title": series_title or series_slug,
-                        "invite_link": invite_link,
-                        "poster_url": poster_url,
-                        "auto_created": auto_created,
-                        "created_by": created_by,
-                        "created_at": now,
-                    },
+                    "$setOnInsert": set_on_insert,
                 },
                 upsert=True,
             )
@@ -895,20 +899,33 @@ class Database:
 
     async def get_fsub_mod(self) -> bool:
         """Get FSub timer link mode status (default True = timer links ON)."""
-        val = await self.get_config("fsub_mod", default="on")
-        if isinstance(val, str):
-            return val.lower() in ("on", "true", "1", "yes")
-        return bool(val)
+        val = await self.get_config("fsub_mod", default=None)
+        if val is not None:
+            if isinstance(val, str):
+                return val.lower() in ("on", "true", "1", "yes")
+            return bool(val)
+        try:
+            from config import Config
+            return getattr(Config, "FSUB_MOD", True)
+        except Exception:
+            return True
 
     async def set_fsub_mod(self, enabled: bool):
         """Set FSub timer link mode ('on' or 'off')."""
         await self.set_config("fsub_mod", "on" if enabled else "off")
 
     async def get_fsub_channel(self) -> int | str | None:
-        """Get configured FSub channel (defaults to settings.bot.main_channel)."""
+        """Get configured FSub channel (defaults to FSUB_CHANNEL or settings.bot.main_channel)."""
         val = await self.get_config("fsub_channel", default=None)
         if val is not None:
             return int(val) if str(val).lstrip("-").isdigit() else str(val)
+        try:
+            from config import Config
+            fsub = getattr(Config, "FSUB_CHANNEL", None)
+            if fsub is not None:
+                return int(fsub) if str(fsub).lstrip("-").isdigit() else str(fsub)
+        except Exception:
+            pass
         return settings.bot.main_channel or None
 
     async def set_fsub_channel(self, channel: int | str | None):
@@ -917,11 +934,19 @@ class Database:
 
     async def get_dlt_time(self) -> int:
         """Get file auto-delete time in seconds (default 600s = 10 mins; 0 = disabled)."""
-        val = await self.get_config("dlt_time", default=600)
+        val = await self.get_config("dlt_time", default=None)
+        if val is not None:
+            try:
+                return max(0, int(val))
+            except Exception:
+                pass
         try:
-            return max(0, int(val))
+            from config import Config
+            if hasattr(Config, "AUTO_DELETE_TIME"):
+                return max(0, int(Config.AUTO_DELETE_TIME))
         except Exception:
-            return 600
+            pass
+        return 600
 
     async def set_dlt_time(self, seconds: int):
         """Set file auto-delete time in seconds (0 = disabled)."""

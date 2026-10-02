@@ -78,7 +78,7 @@ async def _on_start(client: Client):
                     from bot.telegram import raw
                     GetChannels = raw.functions.channels.GetChannels
                     InputChannel = raw.types.InputChannel
-                    raw_id = abs(cid) % (10 ** 10)  # Strip -100 prefix
+                    raw_id = int(str(cid).removeprefix("-100")) if str(cid).startswith("-100") else abs(cid)
                     peer = InputChannel(channel_id=raw_id, access_hash=0)
                     result = await client.invoke(GetChannels(id=[peer]))
                     if result.chats:

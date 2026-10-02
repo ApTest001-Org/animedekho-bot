@@ -126,7 +126,9 @@ class AutoDeleteService:
             client = self.main_client
 
         if not client:
-            log.warning("AutoDeleteService: No client available to delete msg %d in chat %d", message_id, chat_id)
+            log.warning("AutoDeleteService: No client available to delete msg %d in chat %d; removing stale job", message_id, chat_id)
+            if db:
+                await db.remove_auto_delete_job(chat_id, message_id)
             return
 
         # 1. Delete the media message

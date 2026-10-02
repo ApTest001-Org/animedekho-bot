@@ -81,21 +81,38 @@ class HTTPClient:
     # ── Lifecycle ──────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        """Create the underlying aiohttp session."""
-        if self._session is None or self._session.closed:
+        """Create the underlying aiohttp session, closing any previous session."""
+        async with self._lock:
+            if self._session and not self._session.closed:
+                await self._session.close()
             self._session = aiohttp.ClientSession(
                 headers=DEFAULT_HEADERS,
                 timeout=DEFAULT_TIMEOUT,
             )
-        if self._cloudscraper is None:
-            self._cloudscraper = cloudscraper.create_scraper()
+            if self._cloudscraper is None:
+                self._cloudscraper = cloudscraper.create_scraper()
+
+    async def _ensure_session(self) -> aiohttp.ClientSession:
+        """Get or recreate an active aiohttp session thread-safely."""
+        async with self._lock:
+            if self._session is None or self._session.closed:
+                if self._session and not self._session.closed:
+                    await self._session.close()
+                self._session = aiohttp.ClientSession(
+                    headers=DEFAULT_HEADERS,
+                    timeout=DEFAULT_TIMEOUT,
+                )
+            if self._cloudscraper is None:
+                self._cloudscraper = cloudscraper.create_scraper()
+            return self._session
 
     async def close(self) -> None:
-        """Close the aiohttp session."""
-        if self._session and not self._session.closed:
-            await self._session.close()
+        """Close the aiohttp session and cleanup resources."""
+        async with self._lock:
+            if self._session and not self._session.closed:
+                await self._session.close()
             self._session = None
-        self._cloudscraper = None
+            self._cloudscraper = None
 
     # ── Internal helpers ───────────────────────────────────────────────
 
@@ -253,11 +270,7 @@ class HTTPClient:
         last_error = None
         for attempt in range(max_retries):
             try:
-                async with self._lock:
-                    session = self._session
-                if session is None or session.closed:
-                    await self.start()
-                    session = self._session
+                session = await self._ensure_session()
 
                 if method.upper() == "POST":
                     async with session.post(
@@ -358,11 +371,7 @@ class HTTPClient:
         if headers:
             merged_headers.update(headers)
 
-        async with self._lock:
-            session = self._session
-        if session is None or session.closed:
-            await self.start()
-            session = self._session
+        session = await self._ensure_session()
 
         async with session.get(
             url, headers=merged_headers, allow_redirects=True, **kwargs
@@ -401,11 +410,7 @@ class HTTPClient:
         if headers:
             merged_headers.update(headers)
 
-        async with self._lock:
-            session = self._session
-        if session is None or session.closed:
-            await self.start()
-            session = self._session
+        session = await self._ensure_session()
 
         async with session.post(
             url, data=data, headers=merged_headers, allow_redirects=True, **kwargs

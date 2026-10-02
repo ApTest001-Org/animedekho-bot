@@ -769,3 +769,35 @@ def generate_auto_thumbnail(
     except Exception as e:
         log.error("Failed generating auto thumbnail: %s", e, exc_info=True)
         return None
+
+
+def generate_thumbnail(
+    title: str,
+    episode_info: str = "",
+    quality: str = "720p",
+    audio: str = "Hindi Dub",
+    poster_path: str = "",
+    output_path: str = "",
+    bot_username: str = "AnimeDekhoBot",
+    template: str | None = None,
+    template_name: str | None = None,
+    is_movie: bool = False,
+    season: int = 1,
+    episode: int = 1,
+    **kwargs,
+) -> str | None:
+    """Compatibility wrapper for generate_auto_thumbnail."""
+    if not episode_info and not is_movie:
+        episode_info = f"S{season:02d} E{episode:02d}"
+    return generate_auto_thumbnail(
+        title=title,
+        episode_info=episode_info,
+        quality=quality,
+        audio=audio,
+        poster_path=poster_path,
+        output_path=output_path,
+        bot_username=bot_username,
+        template_name=template or template_name,
+        is_movie=is_movie,
+    )
+

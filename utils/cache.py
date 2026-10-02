@@ -21,6 +21,7 @@ class TTLCache:
             if monotonic() > expiry:
                 del self._store[key]
                 return None
+            self._store[key] = (expiry, monotonic(), val)
             return val
 
     async def set(self, key: str, value: Any, ttl: int = 300) -> None:

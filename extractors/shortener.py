@@ -131,6 +131,8 @@ async def _bypass_gplinks(url: str, http_client) -> str | None:
         "Referer": base + "/",
         "Accept": "text/html,application/xhtml+xml",
     })
+    if not html:
+        return None
 
     # Strategy 1: Look for the go form with _token
     # GPLinks uses a form that POSTs to the same URL with a _token
@@ -168,6 +170,8 @@ async def _gplinks_form_bypass(html: str, page_url: str, base: str, http_client)
     Find the form with _token, extract all hidden inputs,
     POST to the form action, then extract redirect from response.
     """
+    if not html:
+        return None
     # Find CSRF token
     token_match = re.search(
         r'name=["\']_token["\']\s*value=["\']([^"\']+)["\']', html
@@ -262,6 +266,8 @@ async def _bypass_vshort(url: str, http_client) -> str | None:
     html = await http_client.get_text_no_cache(url, headers={
         "Referer": base + "/",
     })
+    if not html:
+        return None
 
     # Strategy 1: Look for API/AJAX endpoint that returns the link
     # VShort often has: $.ajax({ url: '/links/go', data: {id: X, token: Y} })
@@ -299,6 +305,9 @@ async def _vshort_ajax_bypass(html: str, page_url: str, base: str, http_client) 
     """
     VShort AJAX bypass: find the go/redirect API call, extract params, call it directly.
     """
+    if not html:
+        return None
+
     # Look for AJAX URL patterns
     # Pattern: url: '/links/go' or '/api/links/go' etc.
     ajax_url_match = re.search(
@@ -329,6 +338,8 @@ async def _vshort_ajax_bypass(html: str, page_url: str, base: str, http_client) 
                 "Referer": page_url,
                 "X-Requested-With": "XMLHttpRequest",
             })
+            if not resp:
+                return None
             
             # Response might be JSON with url field
             try:
@@ -358,6 +369,8 @@ async def _vshort_ajax_bypass(html: str, page_url: str, base: str, http_client) 
 
 async def _vshort_form_bypass(html: str, page_url: str, base: str, http_client) -> str | None:
     """VShort form bypass — similar to GPLinks form approach."""
+    if not html:
+        return None
     # Find all forms
     forms = re.finditer(
         r'<form[^>]*action=["\']([^"\']*)["\'][^>]*>(.*?)</form>',
@@ -434,6 +447,8 @@ async def _bypass_cuty(url: str, http_client) -> str | None:
     html = await http_client.get_text_no_cache(url, headers={
         "Referer": base + "/",
     })
+    if not html:
+        return None
 
     # Strategy 1: Look for data-url or data-href attributes
     dest = _extract_data_attributes(html)
@@ -479,6 +494,8 @@ def _extract_cuty_script(html: str) -> str | None:
     - String.fromCharCode() arrays
     - Reversed strings
     """
+    if not html:
+        return None
     # Double base64 pattern: atob(atob("..."))
     for m in re.finditer(r'atob\s*\(\s*atob\s*\(\s*["\']([A-Za-z0-9+/=]+)["\']\s*\)\s*\)', html):
         try:
@@ -513,6 +530,8 @@ def _extract_cuty_script(html: str) -> str | None:
 
 def _extract_data_attributes(html: str) -> str | None:
     """Extract destination from data-url, data-href, data-link attributes."""
+    if not html:
+        return None
     for attr in ("data-url", "data-href", "data-link", "data-redirect"):
         m = re.search(rf'{attr}\s*=\s*["\']([^"\']+)["\']', html)
         if m:
@@ -533,6 +552,8 @@ def _extract_data_attributes(html: str) -> str | None:
 
 async def _cuty_form_bypass(html: str, page_url: str, base: str, http_client) -> str | None:
     """Cuty form bypass — extract and submit any redirect forms."""
+    if not html:
+        return None
     forms = re.finditer(
         r'<form[^>]*action=["\']([^"\']*)["\'][^>]*method=["\']post["\'][^>]*>(.*?)</form>',
         html, re.DOTALL | re.IGNORECASE
@@ -582,6 +603,9 @@ async def _cuty_form_bypass(html: str, page_url: str, base: str, http_client) ->
 
 async def _cuty_ajax_bypass(html: str, page_url: str, base: str, http_client) -> str | None:
     """Cuty AJAX bypass — look for API endpoints in the scripts."""
+    if not html:
+        return None
+
     # Look for fetch/ajax calls
     api_match = re.search(
         r"""(?:fetch|ajax|post)\s*\(\s*['"](/[^'"]*(?:go|redirect|link|click)[^'"]*)['"]\s*""",
@@ -611,6 +635,8 @@ async def _cuty_ajax_bypass(html: str, page_url: str, base: str, http_client) ->
             "Referer": page_url,
             "X-Requested-With": "XMLHttpRequest",
         })
+        if not resp:
+            return None
 
         try:
             j = json.loads(resp)
@@ -636,6 +662,8 @@ async def _cuty_ajax_bypass(html: str, page_url: str, base: str, http_client) ->
 async def _bypass_generic(url: str, http_client) -> str | None:
     """Generic bypass: tries all known extraction strategies."""
     html = await http_client.get_text_no_cache(url)
+    if not html:
+        return None
 
     for extractor in (_extract_meta_refresh, _extract_atob, _extract_encoded_var,
                       _extract_data_attributes, _extract_js_redirect):
@@ -651,6 +679,8 @@ async def _bypass_generic(url: str, http_client) -> str | None:
 
 def _extract_meta_refresh(html: str) -> str | None:
     """Extract URL from <meta http-equiv="refresh" ...> tag."""
+    if not html:
+        return None
     m = re.search(
         r'<meta[^>]*http-equiv\s*=\s*["\']refresh["\'][^>]*content\s*=\s*["\'][^"\']*url\s*=\s*([^"\'>\s]+)',
         html, re.IGNORECASE,
@@ -664,6 +694,8 @@ def _extract_meta_refresh(html: str) -> str | None:
 
 def _extract_atob(html: str) -> str | None:
     """Decode atob('BASE64') calls and raw base64 strings that decode to URLs."""
+    if not html:
+        return None
     # Explicit atob('...')
     for m in re.finditer(r'atob\s*\(\s*["\']([A-Za-z0-9+/=]+)["\']\s*\)', html):
         try:
@@ -687,6 +719,8 @@ def _extract_atob(html: str) -> str | None:
 
 def _extract_js_redirect(html: str) -> str | None:
     """Extract URL from window.location / location.href assignments."""
+    if not html:
+        return None
     patterns = [
         r'(?:window|document)\.location(?:\.href)?\s*=\s*["\']([^"\']+)["\']',
         r'location\.replace\s*\(\s*["\']([^"\']+)["\']\s*\)',
@@ -706,6 +740,8 @@ def _extract_encoded_var(html: str) -> str | None:
     Look for JS variables containing encoded/escaped URLs.
     Patterns like: var link = "aHR0cHM6Ly..." or var url = decodeURIComponent("...")
     """
+    if not html:
+        return None
     # decodeURIComponent pattern
     for m in re.finditer(r'decodeURIComponent\s*\(\s*["\']([^"\']+)["\']\s*\)', html):
         try:

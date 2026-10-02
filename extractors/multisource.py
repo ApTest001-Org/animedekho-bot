@@ -24,12 +24,12 @@ class MultiSourceManager:
 
     def __init__(self):
         self.sources = [
-            ("AnimeDrive", animedrive),
-            ("ToonFlix", toonflix),
-            ("ToonWorld4All", toonworld4all),
             ("RareAnimes", rareanimes),
+            ("ToonWorld4All", toonworld4all),
             ("DeadToons", deadtoons),
             ("TOONo", toono),
+            ("AnimeDrive", animedrive),
+            ("ToonFlix", toonflix),
         ]
 
     async def search_fallback(self, query: str) -> list[SearchResult]:
