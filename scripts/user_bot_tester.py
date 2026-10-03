@@ -33,11 +33,25 @@ from config import Config
 from utils.helpers import decode_file_param
 
 
-def _save_env_key(key: str, value: str):
-    env_path = REPO_ROOT / ".env"
+TEST_ENV_FILE = REPO_ROOT / ".env.test"
+MAIN_ENV_FILE = REPO_ROOT / ".env"
+
+
+def _read_env_dict(path: Path) -> dict[str, str]:
+    res = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                res[k.strip()] = v.strip().strip("'\"")
+    return res
+
+
+def _save_env_key(key: str, value: str, target_file: Path = TEST_ENV_FILE):
     existing_lines = []
-    if env_path.exists():
-        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
+    if target_file.exists():
+        existing_lines = target_file.read_text(encoding="utf-8").splitlines()
 
     updated = False
     new_lines = []
@@ -51,25 +65,31 @@ def _save_env_key(key: str, value: str):
     if not updated:
         new_lines.append(f'{key}="{value}"')
 
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    target_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
 def _get_api_credentials(prompt_if_missing: bool = False) -> tuple[int, str]:
-    api_id = settings.bot.api_id or getattr(Config, "API_ID", 0)
-    api_hash = settings.bot.api_hash or getattr(Config, "API_HASH", "")
+    test_env = _read_env_dict(TEST_ENV_FILE)
+    main_env = _read_env_dict(MAIN_ENV_FILE)
+
+    api_id_str = test_env.get("API_ID") or main_env.get("API_ID") or os.environ.get("API_ID") or ""
+    api_hash = test_env.get("API_HASH") or main_env.get("API_HASH") or os.environ.get("API_HASH") or ""
+
+    api_id = int(api_id_str) if api_id_str.isdigit() else 0
+
     if (not api_id or not api_hash) and prompt_if_missing:
-        print("Telegram API credentials not detected in .env.")
+        print("Telegram API credentials not detected in .env.test or .env.")
         print("You can get these from https://my.telegram.org\n")
         if not api_id:
             api_id_inp = input("Enter your Telegram API_ID: ").strip()
             api_id = int(api_id_inp)
-            _save_env_key("API_ID", str(api_id))
+            _save_env_key("API_ID", str(api_id), TEST_ENV_FILE)
         if not api_hash:
             api_hash = input("Enter your Telegram API_HASH: ").strip()
-            _save_env_key("API_HASH", api_hash)
+            _save_env_key("API_HASH", api_hash, TEST_ENV_FILE)
 
     if not api_id or not api_hash:
-        print("❌ Error: API_ID or API_HASH is missing. Please set them in .env or config.py.")
+        print("❌ Error: API_ID or API_HASH is missing. Please set them in .env.test.")
         sys.exit(1)
     return int(api_id), str(api_hash)
 
@@ -87,7 +107,8 @@ def _normalize_chat_id(target: str | int) -> str | int:
 
 def _get_bot_target() -> str:
     """Determine target bot username from token or config."""
-    token = settings.bot.token or getattr(Config, "BOT_TOKEN", "")
+    main_env = _read_env_dict(MAIN_ENV_FILE)
+    token = main_env.get("BOT_TOKEN") or settings.bot.token or getattr(Config, "BOT_TOKEN", "")
     if token and ":" in token:
         try:
             bot_id = int(token.split(":", 1)[0])
@@ -98,20 +119,18 @@ def _get_bot_target() -> str:
 
 
 def _save_session_to_env(session_string: str):
-    _save_env_key("TEST_USER_SESSION", session_string)
-    print(f"✅ Session string saved securely to {REPO_ROOT / '.env'}")
+    _save_env_key("TEST_USER_SESSION", session_string, TEST_ENV_FILE)
+    print(f"✅ User test session saved securely to {TEST_ENV_FILE}")
 
 
 def _load_session_from_env() -> str:
-    session_str = os.environ.get("TEST_USER_SESSION", "")
-    if not session_str:
-        env_file = REPO_ROOT / ".env"
-        if env_file.exists():
-            for line in env_file.read_text(encoding="utf-8").splitlines():
-                if line.strip().startswith("TEST_USER_SESSION="):
-                    session_str = line.split("=", 1)[1].strip().strip("'\"")
-                    break
-    return session_str
+    test_env = _read_env_dict(TEST_ENV_FILE)
+    if "TEST_USER_SESSION" in test_env:
+        return test_env["TEST_USER_SESSION"]
+    main_env = _read_env_dict(MAIN_ENV_FILE)
+    if "TEST_USER_SESSION" in main_env:
+        return main_env["TEST_USER_SESSION"]
+    return os.environ.get("TEST_USER_SESSION", "")
 
 
 async def interactive_login():
@@ -249,10 +268,11 @@ async def run_full_suite(
 
     try:
         me = await client.get_me()
+        is_real_user = not me.is_bot
         report.record(
-            "User Client Authentication",
-            True,
-            f"Logged in as {me.first_name} (@{me.username or 'None'}, ID: {me.id})",
+            "User Client Authentication (Real User Account)",
+            is_real_user,
+            f"Logged in as real user: {me.first_name} (@{me.username or 'None'}, ID: {me.id}, is_bot={me.is_bot})",
         )
 
         # ── 1. Resolve Bot Identity ───────────────────────────────────────────

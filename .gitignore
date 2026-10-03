@@ -1,12 +1,12 @@
 __pycache__/
 *.pyc
 .env
+.env*
+.env.test
+*.session*
 *.egg-info/
 venv/
 .venv/
 data/
-animedekho_bot.session*
-.env
-animedekho_bot.session
 opencode.json
 scratch/
