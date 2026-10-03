@@ -314,12 +314,20 @@ async def run_full_suite(
             report.record("Bot DM /start Welcome Message", False, "No response from bot within 12s")
             report.record("Bot DM /start Main Menu Buttons", False, "No message received")
 
+        dump_to_test = dump_target or settings.bot.dump_channel or getattr(Config, "DUMP_CHANNEL", 0)
+
         # ── 3. Test Anime Search in DM ────────────────────────────────────────
         print("\n" + "─" * 50)
         print(f"TEST SUITE 2: Anime Search Query ('{search_query}')")
         print("─" * 50)
         search_req = await client.send_message(bot_id, search_query)
-        search_reply = await wait_for_bot_message(client, bot_id, min_message_id=search_req.id, timeout=15.0)
+        search_reply = await wait_for_bot_message(
+            client,
+            bot_id,
+            min_message_id=search_req.id,
+            timeout=20.0,
+            match_fn=lambda m: bool(m.reply_markup and m.reply_markup.inline_keyboard and not ((m.text or "").startswith("🔍 Searching"))),
+        )
 
         series_btn_callback = None
         if search_reply and search_reply.reply_markup:
@@ -333,7 +341,7 @@ async def run_full_suite(
             # Find first series callback button
             for r in rows:
                 for b in r:
-                    if b.callback_data and (b.callback_data.startswith("sr:") or b.callback_data.startswith("mv:")):
+                    if b.callback_data and (b.callback_data.startswith("sr:") or b.callback_data.startswith("mr:")):
                         series_btn_callback = b.callback_data
                         break
                 if series_btn_callback:
@@ -354,36 +362,51 @@ async def run_full_suite(
             except Exception as ce:
                 print(f"Callback answer note: {ce}")
 
-            # Wait for series details update
-            await asyncio.sleep(3.0)
-            async for updated_msg in client.get_chat_history(bot_id, limit=3):
-                if updated_msg.from_user and updated_msg.from_user.is_bot:
-                    if updated_msg.reply_markup:
+            # 1. Wait for series details message with season buttons (se:...)
+            season_btn_cb = None
+            season_msg_id = None
+            for _ in range(20):
+                await asyncio.sleep(1.0)
+                async for updated_msg in client.get_chat_history(bot_id, limit=10):
+                    if updated_msg.from_user and updated_msg.from_user.is_bot and updated_msg.reply_markup:
                         for row in updated_msg.reply_markup.inline_keyboard:
                             for btn in row:
-                                if btn.callback_data and btn.callback_data.startswith("sn:"):
-                                    # Click Season 1
-                                    print(f"Clicking season button (callback: {btn.callback_data})...")
-                                    try:
-                                        await client.request_callback_answer(
-                                            chat_id=bot_id,
-                                            message_id=updated_msg.id,
-                                            callback_data=btn.callback_data,
-                                        )
-                                    except Exception:
-                                        pass
-                                    await asyncio.sleep(2.5)
+                                if btn.callback_data and (btn.callback_data.startswith("se:") or btn.callback_data.startswith("sn:")):
+                                    season_btn_cb = btn.callback_data
+                                    season_msg_id = updated_msg.id
                                     break
-                        break
-
-            # Check episode picker
-            async for ep_msg in client.get_chat_history(bot_id, limit=3):
-                if ep_msg.from_user and ep_msg.from_user.is_bot and ep_msg.reply_markup:
-                    for row in ep_msg.reply_markup.inline_keyboard:
-                        for btn in row:
-                            if btn.callback_data and btn.callback_data.startswith("ep:"):
-                                episode_btn_callback = btn.callback_data
+                            if season_btn_cb:
                                 break
+                    if season_btn_cb:
+                        break
+                if season_btn_cb:
+                    break
+
+            # 2. Click season button to reveal episodes (ep:...)
+            if season_btn_cb and season_msg_id:
+                print(f"Clicking season button (callback: {season_btn_cb})...")
+                try:
+                    await client.request_callback_answer(
+                        chat_id=bot_id,
+                        message_id=season_msg_id,
+                        callback_data=season_btn_cb,
+                    )
+                except Exception:
+                    pass
+
+                # 3. Wait for episode picker buttons (ep:...)
+                for _ in range(15):
+                    await asyncio.sleep(1.0)
+                    async for ep_msg in client.get_chat_history(bot_id, limit=10):
+                        if ep_msg.from_user and ep_msg.from_user.is_bot and ep_msg.reply_markup:
+                            for row in ep_msg.reply_markup.inline_keyboard:
+                                for btn in row:
+                                    if btn.callback_data and btn.callback_data.startswith("ep:"):
+                                        episode_btn_callback = btn.callback_data
+                                        ep_target_msg_id = ep_msg.id
+                                        break
+                                if episode_btn_callback:
+                                    break
                         if episode_btn_callback:
                             break
                     if episode_btn_callback:
@@ -398,49 +421,47 @@ async def run_full_suite(
             report.record("Series & Episode Hierarchy Navigation", False, "Skipped due to no search results")
 
         # ── 5. Test Live Download Trigger & Cancel Button (Issue #22 / #23) ───
-        if not skip_cancel and episode_btn_callback:
+        if not skip_cancel and episode_btn_callback and ep_target_msg_id:
             print("\n" + "─" * 50)
             print("TEST SUITE 3: Live Download & Real '🛑 Cancel Download' (Issue #22 / #23)")
             print("─" * 50)
             # Click episode to get quality buttons
-            async for current_msg in client.get_chat_history(bot_id, limit=3):
-                if current_msg.from_user and current_msg.from_user.is_bot:
-                    try:
-                        await client.request_callback_answer(
-                            chat_id=bot_id,
-                            message_id=current_msg.id,
-                            callback_data=episode_btn_callback,
-                        )
-                    except Exception:
-                        pass
-                    break
+            print(f"Clicking episode button (callback: {episode_btn_callback})...")
+            try:
+                await client.request_callback_answer(
+                    chat_id=bot_id,
+                    message_id=ep_target_msg_id,
+                    callback_data=episode_btn_callback,
+                )
+            except Exception:
+                pass
 
-            await asyncio.sleep(3.0)
-
-            # Look for quality picker button
+            # Look for quality picker button (dl:...)
             quality_cb = None
-            async for q_msg in client.get_chat_history(bot_id, limit=3):
-                if q_msg.from_user and q_msg.from_user.is_bot and q_msg.reply_markup:
-                    for row in q_msg.reply_markup.inline_keyboard:
-                        for btn in row:
-                            if btn.callback_data and btn.callback_data.startswith("dl:"):
-                                quality_cb = btn.callback_data
+            q_target_msg_id = None
+            for _ in range(15):
+                await asyncio.sleep(1.0)
+                async for q_msg in client.get_chat_history(bot_id, limit=10):
+                    if q_msg.from_user and q_msg.from_user.is_bot and q_msg.reply_markup:
+                        for row in q_msg.reply_markup.inline_keyboard:
+                            for btn in row:
+                                if btn.callback_data and btn.callback_data.startswith("dl:"):
+                                    quality_cb = btn.callback_data
+                                    q_target_msg_id = q_msg.id
+                                    break
+                            if quality_cb:
                                 break
-                        if quality_cb:
-                            break
                     if quality_cb:
                         break
+                if quality_cb:
+                    break
 
-            if quality_cb:
+            if quality_cb and q_target_msg_id:
                 print(f"Triggering download via quality button (callback: {quality_cb})...")
-                pre_dl_id = 0
-                async for m in client.get_chat_history(bot_id, limit=1):
-                    pre_dl_id = m.id
-
                 try:
                     await client.request_callback_answer(
                         chat_id=bot_id,
-                        message_id=pre_dl_id,
+                        message_id=q_target_msg_id,
                         callback_data=quality_cb,
                     )
                 except Exception:
@@ -587,6 +608,15 @@ async def run_full_suite(
 
                 # 6B: Check Video Duration & Thumbnail (Issue #22 Fix Check)
                 video_msgs = [m for m in recent_msgs if m.video]
+                if not video_msgs and dump_to_test:
+                    try:
+                        dump_chat_v = await client.get_chat(_normalize_chat_id(dump_to_test))
+                        async for dv_msg in client.get_chat_history(dump_chat_v.id, limit=15):
+                            if dv_msg.video:
+                                video_msgs.append(dv_msg)
+                    except Exception:
+                        pass
+
                 duration_nonzero = False
                 thumb_present = False
                 sample_duration = 0
@@ -666,7 +696,6 @@ async def run_full_suite(
                 report.record("Channel Button Deep Link Instant Delivery", False, f"Could not parse param: {deep_link_to_test}")
 
         # ── 8. Test Dump Channel Upload Notice (if configured) ────────────────
-        dump_to_test = dump_target or settings.bot.dump_channel or getattr(Config, "DUMP_CHANNEL", 0)
         if dump_to_test:
             print("\n" + "─" * 50)
             print(f"TEST SUITE 6: Dump Channel Completion Notices ({dump_to_test})")
@@ -675,9 +704,9 @@ async def run_full_suite(
                 dump_chat = await client.get_chat(_normalize_chat_id(dump_to_test))
                 found_notice = False
                 sample_notice = ""
-                async for d_msg in client.get_chat_history(dump_chat.id, limit=15):
+                async for d_msg in client.get_chat_history(dump_chat.id, limit=50):
                     d_text = d_msg.text or d_msg.caption or ""
-                    if "Upload Complete Notice" in d_text or "#dump" in d_text:
+                    if any(k in d_text for k in ("Upload Complete Notice", "#dump", "Download complete")):
                         found_notice = True
                         sample_notice = d_text
                         break

@@ -56,16 +56,32 @@ async def do_search(client: Client, message: Message, query: str):
     try:
         results = await api.search(query)
         if not results:
-            await msg.edit_text("❌ No results found. Try a different name.")
+            try:
+                await msg.edit_text("❌ No results found. Try a different name.")
+            except Exception:
+                await message.reply_text("❌ No results found. Try a different name.")
             return
 
-        await msg.edit_text(
-            f"🔍 <b>Results for:</b> {esc(query)}\n\nSelect one:",
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=search_results(results),
-        )
+        try:
+            await msg.edit_text(
+                f"🔍 <b>Results for:</b> {esc(query)}\n\nSelect one:",
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=search_results(results),
+            )
+        except Exception:
+            await message.reply_text(
+                f"🔍 <b>Results for:</b> {esc(query)}\n\nSelect one:",
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=search_results(results),
+            )
     except Exception as e:
         log.exception("Search failed")
-        await msg.edit_text(f"⚠️ Search error: {esc(str(e)[:150])}")
+        try:
+            await msg.edit_text(f"⚠️ Search error: {esc(str(e)[:150])}")
+        except Exception:
+            try:
+                await message.reply_text(f"⚠️ Search error: {esc(str(e)[:150])}")
+            except Exception:
+                pass
         if bot.logger.bot_logger:
             await bot.logger.bot_logger.log_error("search", str(e))

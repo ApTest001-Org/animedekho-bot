@@ -918,6 +918,17 @@ class Database:
         """Set FSub timer link mode ('on' or 'off')."""
         await self.set_config("fsub_mod", "on" if enabled else "off")
 
+    async def is_admin(self, user_id: int) -> bool:
+        """Check if user_id is bot owner or an admin."""
+        if not user_id:
+            return False
+        from bot.auth import is_owner
+        if is_owner(user_id):
+            return True
+        from config import Config
+        admins = getattr(Config, "ADMINS", []) or []
+        return user_id in admins
+
     async def get_fsub_channel(self) -> int | str | None:
         """Get configured FSub channel (defaults to FSUB_CHANNEL or settings.bot.main_channel)."""
         val = await self.get_config("fsub_channel", default=None)

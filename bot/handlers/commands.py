@@ -1,5 +1,6 @@
 """Slash command handlers."""
 
+import asyncio
 import logging
 import re
 

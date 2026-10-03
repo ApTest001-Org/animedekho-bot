@@ -28,6 +28,11 @@ except ImportError:
 
 FRAMEWORK_VERSION = getattr(tg, "__version__", "unknown")
 
+# Support modern 64-bit Telegram channel and user IDs
+if hasattr(tg, "utils"):
+    setattr(tg.utils, "MIN_CHANNEL_ID", -1009999999999999)
+    setattr(tg.utils, "MAX_USER_ID", 999999999999999)
+
 # Handlers
 MessageHandler = handlers.MessageHandler
 CallbackQueryHandler = handlers.CallbackQueryHandler
