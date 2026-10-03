@@ -52,6 +52,7 @@ _SHORTENER_DOMAINS: dict[str, str] = {
     "exe.app": "exe",
     "filepress.site": "filepress",
     "filepress.store": "filepress",
+    "archive.toonworld4all.me": "generic",
 }
 
 _AD_AND_TRACKING_DOMAINS = {
@@ -60,6 +61,13 @@ _AD_AND_TRACKING_DOMAINS = {
     "trafficjunky.com", "bet365.com", "1xbet.com", "dafabet.com",
     "yllix.com", "clickadu.com", "adtrue.com",
 }
+
+_KNOWN_EMBED_HOSTS = (
+    "streamwish", "playerwish", "filemoon", "kerapoxy", "vidstream",
+    "rabbitstream", "megacloud", "vidsrc", "xerver.xyz", "turboviplay",
+    "turbosplayer", "emturbovid", "doodstream", "dood.", "streamtape",
+    "strtape", "mp4upload", "vidguard", "vgfplay",
+)
 
 
 def detect_protection_challenge(html: str) -> str | None:
@@ -82,26 +90,65 @@ def detect_protection_challenge(html: str) -> str | None:
 
 def is_valid_media_destination(url: str) -> bool:
     """
-    Verify that resolved URL is not a known tracking/ad URL or loopback (Issue #19).
+    Verify that resolved URL is not a known tracking/ad URL, shortener,
+    or intermediate HTML landing/redirect page (Issue #19, #21).
     """
     if not url or not url.startswith("http"):
         return False
     try:
-        host = urlparse(url).netloc.lower()
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        path = parsed.path.lower()
+
+        # Cannot be a shortener
         if is_shortener(url):
             return False
+
+        # Cannot be an ad/tracking domain
         if any(ad_dom in host for ad_dom in _AD_AND_TRACKING_DOMAINS):
             return False
+
+        # Cannot be an intermediate redirect script or archive link
+        if "redirect/main.php" in path or "archive.toonworld4all" in host:
+            return False
+
+        # Cannot be an intermediate HubCloud drive landing page
+        if ("hubcloud" in host or "gamerxyt" in host) and ("/drive/" in path or "hubcloud.php" in path):
+            return False
+
+        # If it's a known embed host or has /embed/ or ?trembed=,
+        # it is only valid if it points to a direct stream (.m3u8, .mp4, etc.)
+        is_embed_pattern = (
+            any(eh in host for eh in _KNOWN_EMBED_HOSTS)
+            or "/embed/" in path
+            or "/e/" in path
+            or "trembed" in parsed.query
+        )
+        if is_embed_pattern:
+            is_direct_stream = any(ext in path for ext in (".m3u8", ".mp4", ".mkv", ".webm", "/hls/", "/stream/"))
+            if not is_direct_stream:
+                return False
+
         return True
     except Exception:
         return False
 
 
 def is_shortener(url: str) -> bool:
-    """Return True if the URL belongs to a known shortener domain."""
+    """Return True if the URL belongs to a known shortener domain or redirector."""
+    if not url:
+        return False
     try:
-        host = urlparse(url).netloc.lower()
-        return any(domain in host for domain in _SHORTENER_DOMAINS)
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        path = parsed.path.lower()
+        if any(domain in host for domain in _SHORTENER_DOMAINS):
+            return True
+        if "toonworld4all" in host and "redirect" in path:
+            return True
+        if any(k in host for k in ("bit.ly", "tinyurl.com", "linkvertise.com")):
+            return True
+        return False
     except Exception:
         return False
 
@@ -109,10 +156,16 @@ def is_shortener(url: str) -> bool:
 def _identify(url: str) -> str | None:
     """Return handler key for the URL, or None."""
     try:
-        host = urlparse(url).netloc.lower()
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        path = parsed.path.lower()
         for domain, key in _SHORTENER_DOMAINS.items():
             if domain in host:
                 return key
+        if "toonworld4all" in host and "redirect" in path:
+            return "generic"
+        if any(k in host for k in ("bit.ly", "tinyurl.com", "linkvertise.com")):
+            return "generic"
     except Exception:
         pass
     return None
@@ -174,10 +227,10 @@ async def bypass_shortener(url: str, *, http_client=None) -> str | None:
 
 async def detect_and_bypass(url: str, *, http_client=None) -> str:
     """
-    If *url* is a known shortener, bypass it and return the destination.
+    If *url* is a known shortener or redirector, bypass it and return the destination.
     Otherwise return *url* unchanged. Safe to call on any URL.
     """
-    if is_shortener(url):
+    if is_shortener(url) or "redirect" in url.lower():
         resolved = await bypass_shortener(url, http_client=http_client)
         if resolved:
             log.info("Bypassed: %s → %s", url[:60], resolved[:60])
@@ -740,17 +793,91 @@ async def _cuty_ajax_bypass(html: str, page_url: str, base: str, http_client) ->
 # ── Generic bypass (fallback) ──────────────────────────────────────────
 
 
+def _extract_landing_links(html: str, base_url: str = "") -> str | None:
+    """Extract destination links from intermediate landing/redirect pages."""
+    if not html:
+        return None
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        target_keywords = (
+            "hubcloud", "filepress", "drive.google.com", "mega.nz",
+            "streamwish", "playerwish", "filemoon", "vidstream",
+            "pixeldrain", "workers.dev", "droplink", "shrinkme",
+            "gplinks", "shareus", "ouo"
+        )
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            if any(k in href.lower() for k in target_keywords):
+                if not href.startswith("http") and base_url:
+                    href = urljoin(base_url, href)
+                return href
+
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            txt = a.get_text(" ", strip=True).lower()
+            if any(w in txt for w in ("download", "get link", "proceed", "continue", "direct")):
+                if href.startswith("http") and not any(ad in href.lower() for ad in _AD_AND_TRACKING_DOMAINS):
+                    return href
+    except Exception:
+        pass
+    return None
+
+
 async def _bypass_generic(url: str, http_client) -> str | None:
-    """Generic bypass: tries all known extraction strategies."""
-    html = await http_client.get_text_no_cache(url)
+    """Generic bypass: tries query param decoding, HTTP redirects, and HTML extraction."""
+    # 1. First check if destination is directly encoded in query params
+    try:
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        for key in ("url", "link", "target", "dest", "destination", "r", "to", "go"):
+            if key in qs:
+                for val in qs[key]:
+                    val = unquote(val)
+                    if val.startswith("http") and (is_valid_media_destination(val) or is_shortener(val)):
+                        return val
+                    try:
+                        decoded = base64.b64decode(val).decode("utf-8", errors="ignore")
+                        if decoded.startswith("http"):
+                            return decoded
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # 2. Try following HTTP redirects
+    html = None
+    try:
+        final_url, resp_html = await http_client.get_with_redirects(url)
+        if final_url and final_url != url and (is_valid_media_destination(final_url) or is_shortener(final_url)):
+            return final_url
+        html = resp_html
+    except Exception:
+        try:
+            html = await http_client.get_text_no_cache(url)
+        except Exception:
+            html = None
+
     if not html:
         return None
 
+    # 3. Check for anti-bot challenge
+    challenge = detect_protection_challenge(html)
+    if challenge:
+        log.warning("[generic] Interactive %s challenge on %s", challenge, url)
+        return None
+
+    # 4. Try extractors in priority order
     for extractor in (_extract_meta_refresh, _extract_atob, _extract_encoded_var,
                       _extract_data_attributes, _extract_js_redirect):
         dest = extractor(html)
         if dest:
             return dest
+
+    # 5. Extract links from landing page HTML
+    landing_dest = _extract_landing_links(html, url)
+    if landing_dest:
+        return landing_dest
 
     return None
 

@@ -1,5 +1,6 @@
 """Application factory — builds and configures the WZGram/Pyrogram bot."""
 
+import asyncio
 import logging
 
 from bot.telegram import Client

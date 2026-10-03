@@ -1,5 +1,5 @@
 from .resolver import resolve_player_url
-from .shortener import detect_and_bypass, is_shortener, bypass_shortener
+from .shortener import detect_and_bypass, is_shortener, bypass_shortener, is_valid_media_destination
 from .animedrive import animedrive, is_playable_media_url
 from .toonflix import toonflix
 from .rareanimes import rareanimes
@@ -13,6 +13,7 @@ __all__ = [
     "detect_and_bypass",
     "is_shortener",
     "bypass_shortener",
+    "is_valid_media_destination",
     "animedrive",
     "toonflix",
     "rareanimes",
