@@ -49,17 +49,22 @@ class ToonoExtractor:
             results = []
             seen = set()
 
-            for a in soup.find_all("a", href=True):
+            for art in soup.find_all("article"):
+                h = art.find(["h1", "h2", "h3", "h4", "h5", "header"])
+                a = art.find("a", href=True)
+                if not a:
+                    continue
                 href = a["href"]
-                if ("/series/" not in href and "/movie/" not in href) or href in seen:
+                if ("/series/" not in href and "/movies/" not in href and "/movie/" not in href) or href in seen:
                     continue
                 seen.add(href)
-                title = a.get_text(strip=True)
+                raw_title = h.get_text(strip=True) if h else a.get_text(strip=True)
+                title = re.sub(r"\d{4}$", "", raw_title).strip()
                 if not title or title.lower() in ("watch series", "series", "watch movies", "movies"):
                     continue
 
                 poster = ""
-                img = a.find("img")
+                img = art.find("img")
                 if img:
                     p_url = img.get("src") or img.get("data-src", "")
                     if is_valid_poster_url(p_url):
@@ -71,6 +76,30 @@ class ToonoExtractor:
                     "poster": poster,
                     "source": "TOONo",
                 })
+
+            if not results:
+                for a in soup.find_all("a", href=True):
+                    href = a["href"]
+                    if ("/series/" not in href and "/movie/" not in href) or href in seen:
+                        continue
+                    seen.add(href)
+                    title = a.get_text(strip=True)
+                    if not title or title.lower() in ("watch series", "series", "watch movies", "movies"):
+                        continue
+
+                    poster = ""
+                    img = a.find("img")
+                    if img:
+                        p_url = img.get("src") or img.get("data-src", "")
+                        if is_valid_poster_url(p_url):
+                            poster = p_url
+
+                    results.append({
+                        "title": title,
+                        "url": href,
+                        "poster": poster,
+                        "source": "TOONo",
+                    })
 
             return results
         except Exception as e:

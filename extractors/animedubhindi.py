@@ -71,9 +71,9 @@ class AnimeDubHindiExtractor:
                 # Skip navigation links
                 if not title or len(title) < 4:
                     continue
-                if any(bad in title.lower() for bad in ("home", "contact", "telegram", "author", "dmca", "privacy", "category", "tag")):
+                if any(bad in title.lower() for bad in ("home", "contact", "telegram", "author", "dmca", "privacy", "category", "tag", "schedule")):
                     continue
-                if any(bad in href.lower() for bad in ("/author/", "/category/", "/tag/", "/contact", "/page/")):
+                if any(bad in href.lower() for bad in ("/author/", "/category/", "/tag/", "/contact", "/page/", "schedule.php")):
                     continue
 
                 # Look for poster thumbnail in parent element
@@ -187,20 +187,6 @@ class AnimeDubHindiExtractor:
                 re.compile(rf"\bEp\s+0*{episode}\b", re.I),
             ]
 
-            found_header = None
-            for h in page_soup.find_all(["h2", "h3", "h4", "p", "div"]):
-                txt = h.get_text(strip=True)
-                if any(p.search(txt) for p in ep_patterns) and len(txt) < 40:
-                    found_header = h
-                    break
-
-            if not found_header:
-                log.info("AnimeDubHindi: Episode %d header not found on %s", episode, base_dir_url)
-                return None
-
-            # Collect link groups under this episode header
-            # Links are divided into qualities (480P, 720P, 1080P)
-            curr = found_header.find_next_sibling()
             quality_map: dict[str, list[tuple[str, str]]] = {
                 "480p": [],
                 "720p": [],
@@ -208,37 +194,69 @@ class AnimeDubHindiExtractor:
                 "other": [],
             }
 
-            while curr and curr.name not in ["h2", "h3"]:
-                # Often all qualities are in a single <h4> tag with text like:
-                # 480P [Size: ...] MEGA | Multi ... 720P [Size: ...] MEGA | Multi ...
-                # Or separate paragraphs
-                elem_text = curr.get_text(" ", strip=True)
-                all_links = [(a.get_text(strip=True), urljoin(base_dir_url, a["href"])) for a in curr.find_all("a", href=True)]
+            # Strategy A: Modern pro-ep-card layout (e.g. on new.adhlinks.com)
+            found_card = None
+            for card in page_soup.find_all(class_="pro-ep-card"):
+                title_el = card.find(class_="pro-ep-title") or card.find(["h4", "h3", "h2"])
+                if title_el:
+                    txt = title_el.get_text(strip=True)
+                    if any(p.search(txt) for p in ep_patterns):
+                        found_card = card
+                        break
 
-                # Check if links can be mapped by chunks
-                if "480p" in elem_text.lower() and "720p" in elem_text.lower():
-                    # 5 links per quality typically (MEGA, Multi, GDT, Tera, Fpress)
-                    # Divide evenly or assign based on index
-                    n = len(all_links)
-                    if n >= 15:
-                        quality_map["480p"].extend(all_links[:5])
-                        quality_map["720p"].extend(all_links[5:10])
-                        quality_map["1080p"].extend(all_links[10:15])
-                    elif n >= 10:
-                        quality_map["480p"].extend(all_links[:n // 2])
-                        quality_map["720p"].extend(all_links[n // 2:])
+            if found_card:
+                log.info("AnimeDubHindi: Matched pro-ep-card for episode %d", episode)
+                for qw in found_card.find_all(class_="pro-quality-wrapper"):
+                    q_el = qw.find(class_="pro-ep-quality")
+                    q_txt = q_el.get_text(strip=True).lower() if q_el else ""
+                    target_bucket = "other"
+                    if "480p" in q_txt:
+                        target_bucket = "480p"
+                    elif "720p" in q_txt:
+                        target_bucket = "720p"
+                    elif "1080p" in q_txt:
+                        target_bucket = "1080p"
+                    links = [(a.get_text(strip=True), urljoin(base_dir_url, a["href"])) for a in qw.find_all("a", href=True)]
+                    quality_map[target_bucket].extend(links)
+            else:
+                # Strategy B: Sibling headers search
+                found_header = None
+                for h in page_soup.find_all(["h2", "h3", "h4", "p", "div"]):
+                    txt = h.get_text(strip=True)
+                    if any(p.search(txt) for p in ep_patterns) and len(txt) < 40:
+                        found_header = h
+                        break
+
+                if not found_header:
+                    log.info("AnimeDubHindi: Episode %d header/card not found on %s", episode, base_dir_url)
+                    return None
+
+                curr = found_header.find_next_sibling()
+                while curr and curr.name not in ["h2", "h3"]:
+                    elem_text = curr.get_text(" ", strip=True)
+                    all_links = [(a.get_text(strip=True), urljoin(base_dir_url, a["href"])) for a in curr.find_all("a", href=True)]
+
+                    if "480p" in elem_text.lower() and "720p" in elem_text.lower():
+                        n = len(all_links)
+                        if n >= 15:
+                            quality_map["480p"].extend(all_links[:5])
+                            quality_map["720p"].extend(all_links[5:10])
+                            quality_map["1080p"].extend(all_links[10:15])
+                        elif n >= 10:
+                            quality_map["480p"].extend(all_links[:n // 2])
+                            quality_map["720p"].extend(all_links[n // 2:])
+                        else:
+                            quality_map["other"].extend(all_links)
+                    elif "480p" in elem_text.lower():
+                        quality_map["480p"].extend(all_links)
+                    elif "720p" in elem_text.lower():
+                        quality_map["720p"].extend(all_links)
+                    elif "1080p" in elem_text.lower():
+                        quality_map["1080p"].extend(all_links)
                     else:
                         quality_map["other"].extend(all_links)
-                elif "480p" in elem_text.lower():
-                    quality_map["480p"].extend(all_links)
-                elif "720p" in elem_text.lower():
-                    quality_map["720p"].extend(all_links)
-                elif "1080p" in elem_text.lower():
-                    quality_map["1080p"].extend(all_links)
-                else:
-                    quality_map["other"].extend(all_links)
 
-                curr = curr.find_next_sibling()
+                    curr = curr.find_next_sibling()
 
             # Quality preference order: requested quality first, then remaining
             pref_norm = quality_pref.lower()
@@ -253,21 +271,39 @@ class AnimeDubHindiExtractor:
                 if not candidates:
                     continue
 
-                # Link preference: Multi (direct FilesForever worker) -> MEGA -> Fpress -> others
+                # Link preference: HubCloud (direct cloud fast stream) -> Multi -> MEGA -> Fpress -> others
                 def _link_priority(item: tuple[str, str]) -> int:
                     label, u = item[0].lower(), item[1].lower()
-                    if "multi" in label or "re.php" in u:
+                    if "hubcloud" in label or "hubcloud" in u:
                         return 0
-                    if "fpress" in label or "filepress" in u or "fpgo" in u:
+                    if "multi" in label or "re.php" in u:
                         return 1
-                    if "mega" in label or "redirect.php" in u:
+                    if "fpress" in label or "filepress" in u or "fpgo" in u:
                         return 2
-                    return 3
+                    if "mega" in label or "redirect.php" in u:
+                        return 3
+                    return 4
 
                 candidates.sort(key=_link_priority)
 
                 for label, target_url in candidates:
                     log.info("AnimeDubHindi: Trying %s link (%s) [%s]: %s", label, q_cand, target_url[:80], target_url)
+
+                    # 0. HubCloud link (resolves to Google Cloud direct stream)
+                    if "hubcloud" in target_url.lower():
+                        try:
+                            from extractors.animedrive import animedrive
+                            hub_stream = animedrive._resolve_hubcloud(s, target_url)
+                            if hub_stream:
+                                log.info("AnimeDubHindi: Resolved HubCloud direct stream: %s", hub_stream[:80])
+                                return {
+                                    "url": hub_stream,
+                                    "quality": q_cand if q_cand != "other" else quality_pref,
+                                    "source": "AnimeDubHindi",
+                                    "poster": target_post.get("poster"),
+                                }
+                        except Exception as he:
+                            log.warning("AnimeDubHindi HubCloud resolution failed: %s", he)
 
                     # 1. Multi link via /re.php?data=...
                     if "re.php" in target_url:

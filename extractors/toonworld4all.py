@@ -148,8 +148,38 @@ class ToonWorld4AllExtractor:
                 txt = a.get_text(" ", strip=True).lower()
                 for pat in ep_patterns:
                     if pat.search(href) or pat.search(txt):
+                        resolved_url = href
+                        # Unpack archive redirect page if present
+                        if "archive.toonworld4all" in href or "redirect" in href:
+                            try:
+                                from urllib.parse import urljoin
+                                r_arch = s.get(href, headers={"Referer": post_url}, timeout=10)
+                                if r_arch.status_code == 200:
+                                    soup_arch = BeautifulSoup(r_arch.text, "html.parser")
+                                    for a_arch in soup_arch.find_all("a", href=True):
+                                        if "redirect" in a_arch["href"]:
+                                            redir_full = urljoin(href, a_arch["href"])
+                                            r_red = s.get(redir_full, headers={"Referer": href}, timeout=10)
+                                            m_props = re.search(r'window\.__PROPS__\s*=\s*(\{.*?\});', r_red.text)
+                                            if m_props:
+                                                import json
+                                                props = json.loads(m_props.group(1))
+                                                link_info = props.get("link") or {}
+                                                dom = link_info.get("domain", "")
+                                                hid = link_info.get("hidden", "")
+                                                if dom and hid:
+                                                    root_dl = dom.rstrip("/") + "/" + hid
+                                                    resolved_url = root_dl.replace("/video/", "/drive/")
+                                                    log.info("ToonWorld4All: Extracted root download URL: %s", resolved_url)
+                                                    break
+                                                elif props.get("destination"):
+                                                    resolved_url = props["destination"]
+                                                    break
+                            except Exception as arch_err:
+                                log.warning("ToonWorld4All archive unpack note: %s", arch_err)
+
                         return {
-                            "url": href,
+                            "url": resolved_url,
                             "quality": quality_pref,
                             "source": "ToonWorld4All",
                             "poster": target_post.get("poster"),

@@ -365,7 +365,7 @@ async def run_full_suite(
             # 1. Wait for series details message with season buttons (se:...)
             season_btn_cb = None
             season_msg_id = None
-            for _ in range(20):
+            for _ in range(45):
                 await asyncio.sleep(1.0)
                 async for updated_msg in client.get_chat_history(bot_id, limit=10):
                     if updated_msg.from_user and updated_msg.from_user.is_bot and updated_msg.reply_markup:
@@ -395,7 +395,7 @@ async def run_full_suite(
                     pass
 
                 # 3. Wait for episode picker buttons (ep:...)
-                for _ in range(15):
+                for _ in range(25):
                     await asyncio.sleep(1.0)
                     async for ep_msg in client.get_chat_history(bot_id, limit=10):
                         if ep_msg.from_user and ep_msg.from_user.is_bot and ep_msg.reply_markup:

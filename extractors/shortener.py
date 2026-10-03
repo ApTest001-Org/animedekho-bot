@@ -52,6 +52,7 @@ _SHORTENER_DOMAINS: dict[str, str] = {
     "exe.app": "exe",
     "filepress.site": "filepress",
     "filepress.store": "filepress",
+    "codedew.com": "codedew",
     "archive.toonworld4all.me": "generic",
 }
 
@@ -206,6 +207,8 @@ async def bypass_shortener(url: str, *, http_client=None) -> str | None:
             res = await _bypass_exe(url, http_client)
         elif handler == "filepress":
             res = await _bypass_filepress(url, http_client)
+        elif handler == "codedew":
+            res = await _bypass_codedew(url, http_client)
         else:
             res = await _bypass_generic(url, http_client)
 
@@ -1204,7 +1207,51 @@ async def _bypass_filepress(url: str, http_client) -> str | None:
             return dest
 
     stream_m = re.search(r'["\'](https?://[^"\']+\.(?:mp4|mkv|m3u8)[^"\']*)["\']', html, re.I)
-    if stream_m:
-        return stream_m.group(1)
-
     return None
+
+
+async def _bypass_codedew(url: str, http_client) -> str | None:
+    """
+    Codedew.com / RareAnimes zipper shortener bypass:
+    Step 1: GET url -> find #goBtn with data-href (/zipper/?url=...&ad_done=1)
+    Step 2: GET step2 URL -> find #goBtn with data-href (destination URL, e.g. Mega / direct stream)
+    """
+    try:
+        import asyncio
+        import cloudscraper
+        from bs4 import BeautifulSoup
+        s = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "desktop": True})
+
+        loop = asyncio.get_running_loop()
+
+        def _sync_bypass():
+            r = s.get(url, timeout=12)
+            if r.status_code != 200:
+                return None
+            soup = BeautifulSoup(r.text, "html.parser")
+            btn = soup.find(id="goBtn")
+            if not btn or not btn.get("data-href"):
+                return None
+
+            step2_href = btn.get("data-href")
+            step2_url = urljoin(url, step2_href)
+            r2 = s.get(step2_url, headers={"Referer": url}, timeout=12)
+            if r2.status_code != 200:
+                return None
+            soup2 = BeautifulSoup(r2.text, "html.parser")
+            btn2 = soup2.find(id="goBtn")
+            if btn2 and btn2.get("data-href"):
+                dest = btn2.get("data-href")
+                if dest.startswith("http"):
+                    return dest
+                return urljoin(step2_url, dest)
+            return None
+
+        dest = await loop.run_in_executor(None, _sync_bypass)
+        if dest:
+            log.info("Codedew bypassed: %s -> %s", url[:60], dest[:60])
+            return dest
+    except Exception as e:
+        log.warning("Codedew bypass failed for %s: %s", url, e)
+    return None
+

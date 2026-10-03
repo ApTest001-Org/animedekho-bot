@@ -62,6 +62,9 @@ class AnimeDriveExtractor:
         self._base_url = "https://animedrive.cc"
         self._fallback_url = "https://animedrive.me"
 
+    def _get_scraper(self) -> cloudscraper.CloudScraper:
+        return _get_scraper()
+
     async def search(self, query: str) -> list[dict]:
         """Search AnimeDrive catalog for anime series or movies."""
         loop = asyncio.get_running_loop()
@@ -474,7 +477,7 @@ class AnimeDriveExtractor:
                     continue
                 if "pixeldrain.dev/u/" in h:
                     candidates.append(h.replace("/u/", "/api/file/"))
-                elif any(x in h for x in ("workers.dev", "dl.php", "gpdl.hubcloud")):
+                elif any(x in h for x in ("workers.dev", "dl.php", "gpdl.hubcloud", "pixel.", "hubcloud")):
                     candidates.append(h)
 
             # Test candidates to find verified live working download
@@ -490,21 +493,25 @@ class AnimeDriveExtractor:
                     pass
 
                 curr = cand
-                for _ in range(5):
+                for _ in range(6):
                     try:
                         r_step = s.get(curr, allow_redirects=False, timeout=8)
                         loc = r_step.headers.get("Location")
                         if not loc:
+                            if "link=" in curr:
+                                direct = urllib.parse.unquote(curr.split("link=")[1].split("&")[0])
+                                if is_playable_media_url(direct):
+                                    return direct
                             break
                         if "link=" in loc:
                             direct = urllib.parse.unquote(loc.split("link=")[1].split("&")[0])
                             if is_playable_media_url(direct):
                                 return direct
                         curr = loc
-                        if is_playable_media_url(curr):
-                            return curr
                     except Exception:
                         break
+                if is_playable_media_url(curr):
+                    return curr
 
             return None
         except Exception as e:
