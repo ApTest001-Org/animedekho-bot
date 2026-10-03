@@ -1220,6 +1220,17 @@ async def download_and_upload(
                         custom_thumb_path = thumb_path
                         tracked_temp_files.add(thumb_path)
                         log.info("Using custom thumbnail for %s (type: %s)", title, language or series_slug or "global")
+                        try:
+                            from bot.thumbnail import enhance_custom_thumbnail
+                            enh_custom = str(_TEMP_BASE / f"enhanced_{os.path.basename(custom_thumb_path)}")
+                            enh_res = enhance_custom_thumbnail(custom_thumb_path, enh_custom)
+                            if enh_res and os.path.exists(enh_res):
+                                thumb_path = enh_res
+                                custom_thumb_path = enh_res
+                                tracked_temp_files.add(enh_res)
+                                log.info("Enhanced custom thumbnail applied for %s: %s", title, enh_res)
+                        except Exception as eht:
+                            log.warning("Custom thumbnail enhancement failed: %s", eht)
             except Exception as cte:
                 log.debug("Custom thumbnail check failed: %s", cte)
 
@@ -1415,6 +1426,19 @@ async def download_and_upload(
                         log.info("Applied generated Auto Thumbnail for %s", filename)
                 except Exception as ate:
                     log.warning("Auto thumbnail generation failed: %s", ate)
+
+        # If thumb_path is still a raw poster (not enhanced/auto-generated), enhance it for 16:9 sharpness
+        if thumb_path and not custom_thumb_path and "autothumb" not in thumb_path and "enhanced" not in thumb_path:
+            try:
+                from bot.thumbnail import enhance_custom_thumbnail
+                enh_poster_path = str(_TEMP_BASE / f"enhanced_poster_{os.path.basename(thumb_path)}")
+                enh_poster_res = enhance_custom_thumbnail(thumb_path, enh_poster_path)
+                if enh_poster_res and os.path.exists(enh_poster_res):
+                    thumb_path = enh_poster_res
+                    tracked_temp_files.add(enh_poster_res)
+                    log.info("Applied enhanced poster thumbnail: %s", enh_poster_res)
+            except Exception as epe:
+                log.debug("Poster enhancement fallback skipped: %s", epe)
 
         file_size = os.path.getsize(output_path)
 

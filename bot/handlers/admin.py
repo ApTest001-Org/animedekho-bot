@@ -1214,7 +1214,10 @@ async def cmd_setthumb(client: Client, message: Message):
 
     scope_name = f"for anime <code>{key}</code>" if key else "<b>Globally</b> (all anime)"
     await message.reply_text(
-        f"🖼 <b>Custom Thumbnail Saved!</b>\n\n• <b>Scope:</b> {scope_name}\n• <b>Type:</b> <code>{thumb_type}</code>",
+        f"🖼 <b>Custom Thumbnail Saved!</b>\n\n"
+        f"• <b>Scope:</b> {scope_name}\n"
+        f"• <b>Type:</b> <code>{thumb_type}</code>\n"
+        f"• <b>Processing:</b> Auto-enhanced to 1280x720 HD with razor-sharp clarity",
         parse_mode=enums.ParseMode.HTML,
     )
 
