@@ -186,11 +186,20 @@ class AnimeDriveExtractor:
             log.info("AnimeDrive: No search results for '%s'", anime_title)
             return None
 
-        # Step 2: Choose best matching series page for season
+        # Step 2: Choose best matching series page for anime title and season
         target_page_url = None
         target_poster = None
+
+        # Filter keywords from query
+        query_words = set(re.findall(r'[a-zA-Z0-9]+', anime_title.lower())) - {
+            "season", "series", "hindi", "dubbed", "episode", "episodes", "the", "a", "an", "of", "in", "and", "or"
+        }
+
         for res in search_results:
             t = res["title"].lower()
+            res_words = set(re.findall(r'[a-zA-Z0-9]+', t))
+            if query_words and len(query_words.intersection(res_words)) < min(len(query_words), 2):
+                continue
             if (
                 f"season {season}" in t
                 or f"season {season:02d}" in t
@@ -205,14 +214,17 @@ class AnimeDriveExtractor:
             # Check for title without "season" (or movie)
             for res in search_results:
                 t = res["title"].lower()
+                res_words = set(re.findall(r'[a-zA-Z0-9]+', t))
+                if query_words and len(query_words.intersection(res_words)) < min(len(query_words), 2):
+                    continue
                 if "season" not in t:
                     target_page_url = res["url"]
                     target_poster = res.get("poster")
                     break
 
         if not target_page_url:
-            target_page_url = search_results[0]["url"]
-            target_poster = search_results[0].get("poster")
+            log.info("AnimeDrive: No strictly matching series page for '%s' Season %d", anime_title, season)
+            return None
 
         log.info("AnimeDrive: Inspecting series page: %s", target_page_url)
 

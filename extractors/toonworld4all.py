@@ -103,21 +103,28 @@ class ToonWorld4AllExtractor:
         if not search_results:
             return None
 
+        # Clean title keywords for matching
+        q_words = [w.lower() for w in re.findall(r"\w+", anime_title) if len(w) > 2]
+
         target_post = None
         for res in search_results:
             t = res["title"].lower()
+            href = res["url"].lower()
+            if q_words and not any(w in t or w in href for w in q_words):
+                continue
             if (
                 f"season {season}" in t
                 or f"season {season:02d}" in t
                 or f"s{season}" in t
                 or f"s{season:02d}" in t
-                or (season == 1 and "season" not in t)
+                or (season == 1 and "season" not in t and "s0" not in t and "s1" not in t)
             ):
                 target_post = res
                 break
 
         if not target_post:
-            target_post = search_results[0]
+            log.info("ToonWorld4All: No verified season %d post for '%s'", season, anime_title)
+            return None
 
         post_url = target_post["url"]
         try:
@@ -133,6 +140,7 @@ class ToonWorld4AllExtractor:
             ep_patterns = [
                 re.compile(rf"-{season}x0*{episode}\b", re.I),
                 re.compile(rf"episode.*{season}x0*{episode}\b", re.I),
+                re.compile(rf"(?:ep|episode)\s*0*{episode}\b", re.I),
             ]
 
             for a in content.find_all("a", href=True):
@@ -146,17 +154,6 @@ class ToonWorld4AllExtractor:
                             "source": "ToonWorld4All",
                             "poster": target_post.get("poster"),
                         }
-
-            # Secondary pass: look for FilePress, Mega, or direct download buttons
-            for a in content.find_all("a", href=True):
-                href = a["href"]
-                if "redirect/main.php" in href or "filepress" in href or "mega.nz" in href:
-                    return {
-                        "url": href,
-                        "quality": quality_pref,
-                        "source": "ToonWorld4All",
-                        "poster": target_post.get("poster"),
-                    }
         except Exception as e:
             log.warning("ToonWorld4All resolve error for %s: %s", post_url, e)
 

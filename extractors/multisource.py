@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from api.models import SearchResult
 from utils.helpers import clean_title, slug_to_title
+from extractors.animedubhindi import animedubhindi
 from extractors.animedrive import animedrive
 from extractors.toonflix import toonflix
 from extractors.rareanimes import rareanimes
@@ -21,12 +22,14 @@ log = logging.getLogger(__name__)
 
 
 class MultiSourceManager:
-    """Manages secondary, tertiary, and fallback sources so the bot never reports false 'Not Found' errors."""
+    """Manages primary, secondary, and fallback download/streaming sources."""
 
     def __init__(self):
+        # Direct download/video sources prioritized first (Issue #22 & #23)
         self.sources = [
-            ("RareAnimes", rareanimes),
+            ("AnimeDubHindi", animedubhindi),
             ("ToonWorld4All", toonworld4all),
+            ("RareAnimes", rareanimes),
             ("DeadToons", deadtoons),
             ("TOONo", toono),
             ("AnimeDrive", animedrive),
@@ -87,6 +90,8 @@ class MultiSourceManager:
         """
         clean_title = re.sub(r"(?i)\s*(?:season\s*\d+|s\d+|hindi|dubbed|subbed|multi-audio|tamil|telugu).*$", "", series_title).strip()
         search_title = clean_title or series_title or slug_to_title(series_slug)
+        search_title = re.sub(r"[’'\"\-_:!?]+", " ", search_title).strip()
+        search_title = re.sub(r"\s+", " ", search_title)
 
         for name, extractor in self.sources:
             try:

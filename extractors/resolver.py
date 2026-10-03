@@ -41,7 +41,7 @@ async def resolve_player_url(player_url: str) -> dict | None:
     try:
         if "vimeo.com" in domain:
             result = await _resolve_vimeo(resolved_url)
-        elif any(x in domain for x in ("vidstream", "rabbitstream", "megacloud", "as-cdn", "fireplayer")):
+        elif any(x in domain for x in ("vidstream", "rabbitstream", "megacloud", "as-cdn", "fireplayer", "ravok")):
             result = await _resolve_vidstream_sidecar(resolved_url)
         elif any(x in domain for x in ("xerver.xyz", "mirror.xerver", "vidsrc")):
             result = await _resolve_vidsrc_xerver(resolved_url)
@@ -89,7 +89,7 @@ async def get_m3u8_qualities(m3u8_url: str) -> list[Quality]:
             headers["Referer"] = "https://vidmoly.to/"
         elif "turboviplay" in domain or "turbosplayer" in domain or "emturbovid" in domain:
             headers["Referer"] = "https://emturbovid.com/"
-        elif "as-cdn" in domain or "fireplayer" in domain:
+        elif "as-cdn" in domain or "fireplayer" in domain or "ravok" in domain:
             headers["Referer"] = f"https://{domain}/"
         elif domain:
             headers["Referer"] = f"https://{domain}/"
@@ -426,8 +426,8 @@ async def _resolve_vidstream_sidecar(url: str) -> dict | None:
     parsed = urlparse(url)
     domain = parsed.netloc
     
-    # FirePlayer domains (as-cdn*.top pattern) — use direct API
-    if "as-cdn" in domain or "fireplayer" in domain:
+    # FirePlayer domains (as-cdn*.top pattern, ravok.buzz, etc.) — use direct API
+    if any(x in domain for x in ("as-cdn", "fireplayer", "ravok")):
         return await _resolve_fireplayer(url)
     
     # RabbitStream/MegaCloud — use Node.js sidecar

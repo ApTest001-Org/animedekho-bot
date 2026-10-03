@@ -606,6 +606,10 @@ class Database:
                 "created_at": now,
             }
 
+            # Remove any keys from set_on_insert that are in update_set to prevent MongoDB WriteError path conflict
+            for k in list(update_set.keys()):
+                set_on_insert.pop(k, None)
+
             await self.channel_mappings.update_one(
                 {"series_slug": series_slug},
                 {
@@ -1054,21 +1058,21 @@ class Database:
     # ── Post Style Configuration (Default: 'classic') ────────────────
 
     async def get_post_style(self) -> str:
-        """Get poster post style ('classic' or 'modern'). Default is 'classic'."""
-        val = await self.get_config("post_style", default="classic")
-        return str(val) if val else "classic"
+        """Get poster post style ('classic' or 'modern'). Default is 'modern'."""
+        val = await self.get_config("post_style", default="modern")
+        return str(val) if val else "modern"
 
     async def set_post_style(self, style: str):
         """Set poster post style ('classic' or 'modern')."""
         clean_style = "modern" if style.strip().lower() == "modern" else "classic"
         await self.set_config("post_style", clean_style)
 
-    # ── Start Style & Banner Configuration (Default: 'classic') ──────
+    # ── Start Style & Banner Configuration (Default: 'modern') ──────
 
     async def get_start_style(self) -> str:
-        """Get /start UI style ('classic' or 'modern')."""
+        """Get /start UI style ('classic' or 'modern'). Default is 'modern'."""
         from config import Config
-        def_st = getattr(Config, "START_STYLE", "classic") or "classic"
+        def_st = getattr(Config, "START_STYLE", "modern") or "modern"
         val = await self.get_config("start_style", default=def_st)
         return str(val) if val else def_st
 
@@ -1213,24 +1217,24 @@ class Database:
         await self.set_config("ongoing_channel", channel_id)
 
 
-    # ── Episode Post Style Configuration (Default: 'classic') ────────
+    # ── Episode Post Style Configuration (Default: 'modern') ────────
 
     async def get_ep_style(self) -> str:
-        """Get episode upload post style ('classic' or 'modern'). Default is 'classic'."""
-        val = await self.get_config("ep_style", default="classic")
-        return str(val) if val else "classic"
+        """Get episode upload post style ('classic' or 'modern'). Default is 'modern'."""
+        val = await self.get_config("ep_style", default="modern")
+        return str(val) if val else "modern"
 
     async def set_ep_style(self, style: str):
         """Set episode upload post style ('classic' or 'modern')."""
         clean_style = "modern" if style.strip().lower() == "modern" else "classic"
         await self.set_config("ep_style", clean_style)
 
-    # ── Schedule Style Configuration (Default: 'classic') ────────────
+    # ── Schedule Style Configuration (Default: 'modern') ────────────
 
     async def get_sched_style(self) -> str:
-        """Get schedule UI style ('classic' or 'modern'). Default is 'classic'."""
-        val = await self.get_config("sched_style", default="classic")
-        return str(val) if val else "classic"
+        """Get schedule UI style ('classic' or 'modern'). Default is 'modern'."""
+        val = await self.get_config("sched_style", default="modern")
+        return str(val) if val else "modern"
 
     async def set_sched_style(self, style: str):
         """Set schedule UI style ('classic' or 'modern')."""

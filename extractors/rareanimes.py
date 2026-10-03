@@ -105,22 +105,29 @@ class RareAnimesExtractor:
         if not search_results:
             return None
 
-        # Pick best season matching post
+        # Clean title keywords for matching
+        q_words = [w.lower() for w in re.findall(r"\w+", anime_title) if len(w) > 2]
+
+        # Pick best season matching post with strict title verification
         target_post = None
         for res in search_results:
             t = res["title"].lower()
+            href = res["url"].lower()
+            if q_words and not any(w in t or w in href for w in q_words):
+                continue
             if (
                 f"season {season}" in t
                 or f"season {season:02d}" in t
                 or f"s{season}" in t
                 or f"s{season:02d}" in t
-                or (season == 1 and "season" not in t)
+                or (season == 1 and "season" not in t and "s0" not in t and "s1" not in t)
             ):
                 target_post = res
                 break
 
         if not target_post:
-            target_post = search_results[0]
+            log.info("RareAnimes: No verified season %d post for '%s'", season, anime_title)
+            return None
 
         post_url = target_post["url"]
         try:
@@ -137,7 +144,7 @@ class RareAnimesExtractor:
                 txt = a.get_text(" ", strip=True).lower()
                 href = a["href"]
                 # Match episode number e.g. "Ep 1", "Episode 01", "1x01"
-                ep_match = re.search(r"(?:ep|episode)\s*0*(\d+)", txt)
+                ep_match = re.search(r"(?:ep|episode|e)\s*0*(\d+)\b", txt)
                 if ep_match and int(ep_match.group(1)) == episode:
                     if "http" in href:
                         return {
@@ -146,18 +153,6 @@ class RareAnimesExtractor:
                             "source": "RareAnimes",
                             "poster": target_post.get("poster"),
                         }
-
-            # Fallback: look for zipper or multiquality buttons
-            all_links = content.find_all("a", href=True)
-            for a in all_links:
-                href = a["href"]
-                if "zipper" in href or "multiquality" in href:
-                    return {
-                        "url": href,
-                        "quality": quality_pref,
-                        "source": "RareAnimes",
-                        "poster": target_post.get("poster"),
-                    }
         except Exception as e:
             log.warning("RareAnimes resolve error for %s: %s", post_url, e)
 

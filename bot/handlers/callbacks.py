@@ -6,7 +6,7 @@ import logging
 import os
 
 from bot.telegram import Client, enums
-from bot.telegram.types import CallbackQuery
+from bot.telegram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 from api.client import api
 from api.models import Quality
@@ -15,7 +15,7 @@ from bot.auth import require_approved
 import bot.logger
 from bot.downloader import (
     download_and_upload, make_episode_filename, make_movie_filename,
-    sanitize_filename,
+    sanitize_filename, download_job_manager,
 )
 from utils.helpers import esc, truncate, short_slug, extract_series_slug, slug_to_title
 
@@ -30,6 +30,17 @@ async def callback_router(client: Client, query: CallbackQuery):
     from bot.database import db
     if db and user_id and await db.is_banned(user_id):
         await query.answer("⛔ You are banned from using this bot.", show_alert=True)
+        return
+
+    # Real Download Cancel Button handler (Issues #22 & #23)
+    if data and data.startswith("cendl:"):
+        job_id = data.split(":", 1)[1]
+        is_admin = await db.is_admin(user_id) if db and user_id else False
+        ok, msg = await download_job_manager.cancel_job(job_id, user_id, is_admin)
+        try:
+            await query.answer(msg, show_alert=not ok)
+        except Exception:
+            pass
         return
 
     try:
@@ -322,6 +333,13 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
     """Handle single episode download — resolves servers and falls back across multi-source chain if needed."""
     chat_id = q.message.chat.id
     user = q.from_user
+    user_id = user.id if user else 0
+
+    # Immediate feedback
+    try:
+        await q.answer("⏳ Finding video quality...", show_alert=False)
+    except Exception:
+        pass
 
     # Get stored server data (may be raw/unresolved from skeleton episode view)
     data = _get_servers(chat_id, ep_slug)
@@ -364,6 +382,21 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
             except Exception as e:
                 log.warning("Cached file delivery failed: %s", e)
                 await db.files.delete_one({"_id": cached_doc["_id"]})
+
+    # Send immediate progress status message with cancel button (Issues #22 & #23)
+    job_id = download_job_manager.create_job(user_id, title)
+    cancel_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Download", callback_data=f"cendl:{job_id}")]])
+    progress_msg = await q.message.reply_text(
+        f"⏳ <b>Finding video quality...</b>\n\n📺 <b>{esc(title)}</b> [{quality_pref}]\n<i>Searching fastest servers...</i>",
+        parse_mode=enums.ParseMode.HTML,
+        reply_markup=cancel_markup,
+    )
+    job = download_job_manager.get_job(job_id)
+    if job:
+        job.progress_msg = progress_msg
+
+    if download_job_manager.is_job_cancelled(job_id):
+        return
 
     # Lazy resolve: prioritize servers matching requested quality
     resolved = await _lazy_resolve_servers(raw_servers, quality_pref) if raw_servers else []
@@ -477,7 +510,12 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
                 log.warning("ToonFlix resolution error: %s", e)
 
     if not candidates:
-        await _safe_edit(q, "⚠️ No downloadable URL found on any server.")
+        if not download_job_manager.is_job_cancelled(job_id):
+            await progress_msg.edit_text("⚠️ No downloadable URL found on any server.")
+        download_job_manager.remove_job(job_id)
+        return
+
+    if download_job_manager.is_job_cancelled(job_id):
         return
 
     primary_server, primary_quality = candidates[0]
@@ -501,6 +539,11 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
                     caption=f"📦 <b>{esc(title)}</b> [{primary_quality.resolution}]\n<i>⚡ From library — instant delivery!</i>",
                     parse_mode=enums.ParseMode.HTML,
                 )
+                try:
+                    await progress_msg.delete()
+                except Exception:
+                    pass
+                download_job_manager.remove_job(job_id)
                 return
             except Exception as e:
                 log.warning("Cached file expired/deleted, removing from DB and re-downloading: %s", e)
@@ -534,10 +577,14 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
     elif primary_quality.resolution != quality_pref and primary_quality.resolution != "auto":
         quality_label = f"{primary_quality.resolution} (requested {quality_pref})"
 
-    progress_msg = await q.message.reply_text(
-        f"📥 <b>Starting download:</b> {esc(title)} [{quality_label}]",
-        parse_mode=enums.ParseMode.HTML,
-    )
+    try:
+        await progress_msg.edit_text(
+            f"📥 <b>Starting download:</b> {esc(title)} [{quality_label}]",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=cancel_markup,
+        )
+    except Exception:
+        pass
 
     asyncio.create_task(
         _do_download(
@@ -545,6 +592,7 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
             series_slug=series_slug or "",
             episode_key=episode_key,
             poster_url=poster_url,
+            job_id=job_id,
         )
     )
 
@@ -585,6 +633,22 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
             except Exception as e:
                 log.warning("Cached movie delivery failed: %s", e)
                 await db.files.delete_one({"_id": cached_doc["_id"]})
+
+    user_id = user.id if user else 0
+    job_id = download_job_manager.create_job(user_id, title)
+    cancel_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Download", callback_data=f"cendl:{job_id}")]])
+
+    progress_msg = await q.message.reply_text(
+        f"⏳ <b>Finding video quality...</b>\n\n🎬 <b>{esc(title)}</b> [{quality_pref}]\n<i>Searching fastest servers...</i>",
+        parse_mode=enums.ParseMode.HTML,
+        reply_markup=cancel_markup,
+    )
+    job = download_job_manager.get_job(job_id)
+    if job:
+        job.progress_msg = progress_msg
+
+    if download_job_manager.is_job_cancelled(job_id):
+        return
 
     raw_servers = data["servers"]
 
@@ -673,7 +737,12 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
                 log.warning("ToonFlix movie resolution error: %s", e)
 
     if not candidates:
-        await _safe_edit(q, "⚠️ No downloadable URL found on any server.")
+        if not download_job_manager.is_job_cancelled(job_id):
+            await progress_msg.edit_text("⚠️ No downloadable URL found on any server.")
+        download_job_manager.remove_job(job_id)
+        return
+
+    if download_job_manager.is_job_cancelled(job_id):
         return
 
     primary_server, primary_quality = candidates[0]
@@ -691,6 +760,11 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
                     caption=f"📦 <b>{esc(title)}</b> [{primary_quality.resolution}]\n<i>⚡ From library — instant delivery!</i>",
                     parse_mode=enums.ParseMode.HTML,
                 )
+                try:
+                    await progress_msg.delete()
+                except Exception:
+                    pass
+                download_job_manager.remove_job(job_id)
                 return
             except Exception as e:
                 log.warning("Cached movie file expired/deleted, removing from DB: %s", e)
@@ -711,10 +785,14 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
     elif primary_quality.resolution != quality_pref and primary_quality.resolution != "auto":
         quality_label = f"{primary_quality.resolution} (requested {quality_pref})"
 
-    progress_msg = await q.message.reply_text(
-        f"📥 <b>Starting download:</b> {esc(title)} [{quality_label}]",
-        parse_mode=enums.ParseMode.HTML,
-    )
+    try:
+        await progress_msg.edit_text(
+            f"📥 <b>Starting download:</b> {esc(title)} [{quality_label}]",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=cancel_markup,
+        )
+    except Exception:
+        pass
 
     asyncio.create_task(
         _do_download(
@@ -723,6 +801,7 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
             episode_key="movie",
             poster_url=poster_url,
             is_movie=True,
+            job_id=job_id,
         )
     )
 
@@ -986,9 +1065,36 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                                 referer=tf_res.get("referer", "https://drive.toonflix.in/"),
                                 poster_url=series.poster or tf_res.get("poster", ""),
                                 destination_channel_id=dest_channel_id,
+                                series_slug=series.slug,
                             )
                     except Exception as e:
                         log.warning("Batch ToonFlix fallback failed for ep %s: %s", ep.slug, e)
+
+                # Fallback 3: Multi-Source Manager (AnimeDubHindi, ToonWorld4All, RareAnimes, DeadToons, TOONo)
+                if not success:
+                    try:
+                        from extractors.multisource import multi_source_manager
+                        ms_res = await multi_source_manager.resolve_episode_stream(
+                            series_title=series.title,
+                            season=season,
+                            episode=ep.number,
+                            quality_pref=quality_pref,
+                            series_slug=series.slug,
+                        )
+                        if ms_res and ms_res.get("url"):
+                            chosen_q = Quality(resolution=ms_res.get("quality", quality_pref), url=ms_res["url"])
+                            filename = make_episode_filename(series.title, season, ep.number, chosen_q.resolution)
+                            success, sent_msg = await download_and_upload(
+                                chat_id, ms_res["url"], chosen_q.resolution,
+                                filename,
+                                f"{series.title} S{season}E{ep.number}",
+                                ep_msg, client,
+                                poster_url=series.poster or ms_res.get("poster", ""),
+                                destination_channel_id=dest_channel_id,
+                                series_slug=series.slug,
+                            )
+                    except Exception as e:
+                        log.warning("Batch Multi-Source fallback failed for ep %s: %s", ep.slug, e)
 
             if success:
                 completed += 1
@@ -1094,9 +1200,16 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
 
 async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServer, Quality]],
                        filename, title, progress_msg, user,
-                       series_slug="", episode_key="", poster_url=None, is_movie=False):
+                       series_slug="", episode_key="", poster_url=None, is_movie=False,
+                       job_id: str | None = None):
     """Background task for single download with multi-server candidate fallback."""
     try:
+        if job_id:
+            download_job_manager.attach_task(job_id, asyncio.current_task())
+
+        if download_job_manager.is_job_cancelled(job_id):
+            return
+
         success = False
         sent_msg = None
         chosen_quality = candidates[0][1]
@@ -1105,12 +1218,16 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
         dest_channel_id = await _resolve_destination_channel(series_slug, lookup_title, poster_url or "")
 
         for attempt, (srv, quality) in enumerate(candidates, 1):
+            if download_job_manager.is_job_cancelled(job_id):
+                return
             chosen_quality = quality
             if attempt > 1:
                 try:
+                    c_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Download", callback_data=f"cendl:{job_id}")]]) if job_id else None
                     await progress_msg.edit_text(
                         f"🔄 <b>Trying server {attempt}/{len(candidates)}:</b> {esc(srv.name)}\n{esc(title)} [{quality.resolution}]",
                         parse_mode=enums.ParseMode.HTML,
+                        reply_markup=c_kb,
                     )
                 except Exception:
                     pass
@@ -1123,12 +1240,14 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                 referer=ref,
                 poster_url=poster_url or "",
                 destination_channel_id=dest_channel_id,
+                series_slug=series_slug,
+                is_movie=is_movie,
+                job_id=job_id,
             )
             if success:
                 break
 
-        if not success:
-            # Fallback cascade: Secondary (AnimeDrive) -> Tertiary (ToonFlix)
+        if not success and not download_job_manager.is_job_cancelled(job_id):
             import re
             s_num, ep_num = 1, 1
             if episode_key:
@@ -1137,13 +1256,54 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                     s_num = int(ep_m.group(1))
                     ep_num = int(ep_m.group(2))
 
-            # Step 1: Secondary fallback to AnimeDrive (if not already tried)
-            if not any("AnimeDrive" in s.name for s, _ in candidates):
+            # Step 1: Multi-source scrapers fallback (AnimeDubHindi, ToonWorld4All, RareAnimes, DeadToons, TOONo)
+            if not is_movie and not any(s.name in ("AnimeDubHindi", "ToonWorld4All", "RareAnimes", "DeadToons", "TOONo", "MultiSource") for s, _ in candidates):
+                try:
+                    from extractors.multisource import multi_source_manager
+                    c_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Download", callback_data=f"cendl:{job_id}")]]) if job_id else None
+                    await progress_msg.edit_text(
+                        f"🔄 <b>Primary servers failed, checking multi-source scrapers...</b>\n{esc(title)} [{chosen_quality.resolution}]",
+                        parse_mode=enums.ParseMode.HTML,
+                        reply_markup=c_kb,
+                    )
+                    ms_res = await multi_source_manager.resolve_episode_stream(
+                        series_title=lookup_title,
+                        season=s_num,
+                        episode=ep_num,
+                        quality_pref=chosen_quality.resolution,
+                        series_slug=series_slug,
+                    )
+                    if ms_res and ms_res.get("url"):
+                        if not poster_url:
+                            from utils.anilist import resolve_best_poster
+                            res_p = await resolve_best_poster(lookup_title, ms_res.get("poster"))
+                            if res_p:
+                                poster_url = res_p
+                                if series_slug:
+                                    _poster_cache[series_slug] = poster_url
+                        success, sent_msg = await download_and_upload(
+                            chat_id, ms_res["url"], ms_res.get("quality", chosen_quality.resolution), filename, title, progress_msg, client,
+                            poster_url=poster_url or "",
+                            destination_channel_id=dest_channel_id,
+                            series_slug=series_slug,
+                            is_movie=is_movie,
+                            job_id=job_id,
+                        )
+                        if success:
+                            from api.models import Quality
+                            chosen_quality = Quality(resolution=ms_res.get("quality", chosen_quality.resolution), url=ms_res["url"])
+                except Exception as e:
+                    log.warning("Multi-source fallback in _do_download failed: %s", e)
+
+            # Step 2: Fallback to AnimeDrive (if not already tried)
+            if not success and not download_job_manager.is_job_cancelled(job_id) and not any("AnimeDrive" in s.name for s, _ in candidates):
                 try:
                     from extractors.animedrive import animedrive
+                    c_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Download", callback_data=f"cendl:{job_id}")]]) if job_id else None
                     await progress_msg.edit_text(
                         f"🔄 <b>AnimeDekho servers failed, trying AnimeDrive fallback...</b>\n{esc(title)} [{chosen_quality.resolution}]",
                         parse_mode=enums.ParseMode.HTML,
+                        reply_markup=c_kb,
                     )
                     ad_res = await animedrive.resolve_episode(lookup_title, season=s_num, episode=ep_num, quality_pref=chosen_quality.resolution)
                     if ad_res and ad_res.get("url"):
@@ -1159,6 +1319,9 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                             referer=ad_res.get("referer", "https://hubcloud.ist/"),
                             poster_url=poster_url or "",
                             destination_channel_id=dest_channel_id,
+                            series_slug=series_slug,
+                            is_movie=is_movie,
+                            job_id=job_id,
                         )
                         if success:
                             from api.models import Quality
@@ -1166,13 +1329,15 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                 except Exception as e:
                     log.warning("AnimeDrive fallback in _do_download failed: %s", e)
 
-            # Step 2: Tertiary fallback to ToonFlix (if not already tried)
-            if not success and not any("ToonFlix" in s.name for s, _ in candidates):
+            # Step 3: Fallback to ToonFlix (if not already tried)
+            if not success and not download_job_manager.is_job_cancelled(job_id) and not any("ToonFlix" in s.name for s, _ in candidates):
                 try:
                     from extractors.toonflix import toonflix
+                    c_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Download", callback_data=f"cendl:{job_id}")]]) if job_id else None
                     await progress_msg.edit_text(
                         f"🔄 <b>Trying ToonFlix fallback...</b>\n{esc(title)} [{chosen_quality.resolution}]",
                         parse_mode=enums.ParseMode.HTML,
+                        reply_markup=c_kb,
                     )
                     tf_res = await toonflix.resolve_episode(lookup_title, season=s_num, episode=ep_num, quality_pref=chosen_quality.resolution)
                     if tf_res and tf_res.get("url"):
@@ -1188,6 +1353,9 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                             referer=tf_res.get("referer", "https://drive.toonflix.in/"),
                             poster_url=poster_url or "",
                             destination_channel_id=dest_channel_id,
+                            series_slug=series_slug,
+                            is_movie=is_movie,
+                            job_id=job_id,
                         )
                         if success:
                             from api.models import Quality
@@ -1257,7 +1425,7 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                     except Exception:
                         pass
 
-        elif not success:
+        elif not success and not download_job_manager.is_job_cancelled(job_id):
             if bot.logger.bot_logger:
                 await bot.logger.bot_logger.log_download_error(title, "Download/upload failed on all servers")
             try:
@@ -1279,12 +1447,15 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
         if bot.logger.bot_logger:
             await bot.logger.bot_logger.log_download_error(title, str(e))
         try:
-            await progress_msg.edit_text(
-                f"❌ <b>Error:</b> {esc(title)}\n{esc(str(e)[:200])}",
-                parse_mode=enums.ParseMode.HTML,
-            )
+            if not download_job_manager.is_job_cancelled(job_id):
+                await progress_msg.edit_text(
+                    f"❌ <b>Error:</b> {esc(title)}\n{esc(str(e)[:200])}",
+                    parse_mode=enums.ParseMode.HTML,
+                )
         except Exception:
             pass
+    finally:
+        download_job_manager.remove_job(job_id)
 
 
 async def _handle_genres(q: CallbackQuery):

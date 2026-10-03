@@ -102,21 +102,28 @@ class DeadToonsExtractor:
         if not search_results:
             return None
 
+        # Clean title keywords for matching
+        q_words = [w.lower() for w in re.findall(r"\w+", anime_title) if len(w) > 2]
+
         target_post = None
         for res in search_results:
             t = res["title"].lower()
+            href = res["url"].lower()
+            if q_words and not any(w in t or w in href for w in q_words):
+                continue
             if (
                 f"season {season}" in t
                 or f"season {season:02d}" in t
                 or f"s{season}" in t
                 or f"s{season:02d}" in t
-                or (season == 1 and "season" not in t)
+                or (season == 1 and "season" not in t and "s0" not in t and "s1" not in t)
             ):
                 target_post = res
                 break
 
         if not target_post:
-            target_post = search_results[0]
+            log.info("DeadToons: No verified season %d post for '%s'", season, anime_title)
+            return None
 
         post_url = target_post["url"]
         try:
@@ -130,17 +137,6 @@ class DeadToonsExtractor:
             for a in soup.find_all("a", href=True):
                 href = a["href"]
                 if pattern.search(href) or f"episode/{season}x{episode}" in href.lower():
-                    return {
-                        "url": href,
-                        "quality": quality_pref,
-                        "source": "DeadToons",
-                        "poster": target_post.get("poster"),
-                    }
-
-            # Fallback to pack or quality link
-            for a in soup.find_all("a", href=True):
-                href = a["href"]
-                if quality_pref.lower() in href.lower() or "1080p" in href.lower():
                     return {
                         "url": href,
                         "quality": quality_pref,

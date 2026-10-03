@@ -28,6 +28,122 @@ _TEMP_BASE = Path(tempfile.gettempdir()) / "animedekho_dl"
 _TEMP_BASE.mkdir(parents=True, exist_ok=True)
 
 
+class DownloadJob:
+    """Represents an active download task for cancellation tracking."""
+
+    def __init__(self, job_id: str, user_id: int, title: str, progress_msg: Message | None = None):
+        self.job_id = job_id
+        self.user_id = user_id
+        self.title = title
+        self.progress_msg = progress_msg
+        self.task: asyncio.Task | None = None
+        self.subprocesses: set[any] = set()
+        self.temp_files: set[str] = set()
+        self.is_cancelled: bool = False
+        self.created_at: float = time.time()
+
+
+class DownloadJobManager:
+    """Tracks active download tasks and allows instant per-job cancellation (Issue #22 & #23)."""
+
+    def __init__(self):
+        self._jobs: dict[str, DownloadJob] = {}
+        self._cancelled_ids: set[str] = set()
+
+    def create_job(self, user_id: int, title: str, progress_msg: Message | None = None) -> str:
+        job_id = uuid.uuid4().hex[:10]
+        self._jobs[job_id] = DownloadJob(job_id, user_id, title, progress_msg)
+        return job_id
+
+    def get_job(self, job_id: str) -> DownloadJob | None:
+        return self._jobs.get(job_id)
+
+    def is_job_cancelled(self, job_id: str | None) -> bool:
+        if not job_id:
+            return False
+        if job_id in self._cancelled_ids:
+            return True
+        job = self._jobs.get(job_id)
+        return bool(job and job.is_cancelled)
+
+    def attach_task(self, job_id: str, task: asyncio.Task):
+        job = self._jobs.get(job_id)
+        if job:
+            job.task = task
+
+    def attach_process(self, job_id: str | None, proc: any):
+        if not job_id:
+            return
+        job = self._jobs.get(job_id)
+        if job and proc:
+            job.subprocesses.add(proc)
+
+    def attach_temp_file(self, job_id: str | None, file_path: str):
+        if not job_id:
+            return
+        job = self._jobs.get(job_id)
+        if job and file_path:
+            job.temp_files.add(file_path)
+
+    async def cancel_job(self, job_id: str, user_id: int, is_admin: bool = False) -> tuple[bool, str]:
+        job = self._jobs.get(job_id)
+        if not job:
+            return False, "Job not found or already finished"
+
+        if job.user_id != user_id and not is_admin:
+            return False, "You cannot cancel another user's download"
+
+        self._cancelled_ids.add(job_id)
+        if len(self._cancelled_ids) > 1000:
+            self._cancelled_ids = set(list(self._cancelled_ids)[-500:])
+        job.is_cancelled = True
+
+        # Terminate running subprocesses
+        for proc in list(job.subprocesses):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        job.subprocesses.clear()
+
+        # Cancel asyncio task
+        if job.task and not job.task.done():
+            job.task.cancel()
+
+        # Cleanup temp files
+        for p in list(job.temp_files):
+            try:
+                if os.path.isdir(p):
+                    shutil.rmtree(p, ignore_errors=True)
+                elif os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        job.temp_files.clear()
+
+        # Update progress message
+        if job.progress_msg:
+            try:
+                await job.progress_msg.edit_text(
+                    f"🛑 <b>Download Cancelled</b>\n\n"
+                    f"📺 <b>{job.title}</b>\n"
+                    f"<i>The download task was cancelled and temporary files cleaned up.</i>",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
+        self._jobs.pop(job_id, None)
+        return True, "Cancelled successfully"
+
+    def remove_job(self, job_id: str | None):
+        if job_id:
+            self._jobs.pop(job_id, None)
+
+
+download_job_manager = DownloadJobManager()
+
+
 def sanitize_filename(name: str) -> str:
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', name)
     name = re.sub(r'[\s]+', ' ', name).strip()
@@ -154,15 +270,25 @@ def _done_text(title: str, quality: str, size_bytes: float, elapsed: float) -> s
     )
 
 
-async def _update_progress(msg: Message | None, text: str, last_edit: list[float], interval: float = 3.0):
+async def _update_progress(
+    msg: Message | None,
+    text: str,
+    last_edit: list[float],
+    interval: float = 3.0,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    job_id: str | None = None,
+):
     if not msg:
         return
     now = time.time()
     if now - last_edit[0] < interval:
         return
     last_edit[0] = now
+    markup = reply_markup
+    if markup is None and job_id:
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Download", callback_data=f"cendl:{job_id}")]])
     try:
-        await msg.edit_text(text, parse_mode=enums.ParseMode.HTML)
+        await msg.edit_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=markup)
     except Exception:
         pass
 
@@ -198,11 +324,13 @@ async def direct_http_download(
     title: str = "video",
     quality: str = "auto",
     referer: str = "",
+    job_id: str | None = None,
 ) -> bool:
     """Download direct video file (MP4/MKV) via chunked HTTP stream with progress."""
     log.info("Direct HTTP download: url=%s quality=%s", url[:120], quality)
     last_edit = [0.0]
     start_time = time.time()
+    download_job_manager.attach_temp_file(job_id, output_path)
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -230,6 +358,9 @@ async def direct_http_download(
 
                 with open(output_path, "wb") as f:
                     async for chunk in resp.content.iter_chunked(1024 * 1024):  # 1MB chunks
+                        if download_job_manager.is_job_cancelled(job_id):
+                            log.info("Direct HTTP download cancelled for %s", title)
+                            return False
                         f.write(chunk)
                         downloaded += len(chunk)
 
@@ -247,6 +378,7 @@ async def direct_http_download(
                                     _download_progress_text(title, quality, pct, downloaded, elapsed, speed),
                                     last_edit,
                                     interval=3.0,
+                                    job_id=job_id,
                                 )
 
         success = os.path.exists(output_path) and os.path.getsize(output_path) > 50_000
@@ -276,6 +408,7 @@ async def n_m3u8dl_re_download(
     progress_msg: Message | None = None,
     title: str = "video",
     variant_url: str = "",
+    job_id: str | None = None,
 ) -> bool:
     """Download using N_m3u8DL-RE — video + all audio tracks simultaneously."""
     if not shutil.which("N_m3u8DL-RE"):
@@ -349,6 +482,9 @@ async def n_m3u8dl_re_download(
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+        download_job_manager.attach_process(job_id, proc)
+        download_job_manager.attach_temp_file(job_id, output_path)
+        download_job_manager.attach_temp_file(job_id, str(job_temp_dir))
 
         last_edit = [0.0]
         start_time = time.time()
@@ -360,6 +496,12 @@ async def n_m3u8dl_re_download(
             last_time = time.time()
             last_change_time = time.time()
             while proc.returncode is None:
+                if download_job_manager.is_job_cancelled(job_id):
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    break
                 await asyncio.sleep(3)
                 try:
                     total = sum(
@@ -402,6 +544,7 @@ async def n_m3u8dl_re_download(
                             _download_progress_text(title, quality, pct, total, elapsed, speed) + stall_info,
                             last_edit,
                             interval=3.0,
+                            job_id=job_id,
                         )
                 except Exception:
                     pass
@@ -476,6 +619,7 @@ async def ffmpeg_download(
     title: str = "video",
     quality: str = "auto",
     referer: str = "",
+    job_id: str | None = None,
 ) -> bool:
     """Download stream using FFmpeg as a reliable universal fallback."""
     if not shutil.which("ffmpeg"):
@@ -495,6 +639,8 @@ async def ffmpeg_download(
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
+    download_job_manager.attach_process(job_id, proc)
+    download_job_manager.attach_temp_file(job_id, output_path)
 
     last_edit = [0.0]
     start_time = time.time()
@@ -503,6 +649,12 @@ async def ffmpeg_download(
         last_size = 0
         last_time = time.time()
         while proc.returncode is None:
+            if download_job_manager.is_job_cancelled(job_id):
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                break
             await asyncio.sleep(3)
             try:
                 total = os.path.getsize(output_path) if os.path.exists(output_path) else 0
@@ -524,6 +676,7 @@ async def ffmpeg_download(
                         _download_progress_text(title, quality, pct, total, elapsed, speed),
                         last_edit,
                         interval=3.0,
+                        job_id=job_id,
                     )
             except Exception:
                 pass
@@ -626,6 +779,22 @@ async def resolve_m3u8_variant(master_url: str, target_quality: str, referer: st
         return master_url
 
 
+def _parse_safe_float(val, default: float = 0.0) -> float:
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str):
+        v_clean = val.strip()
+        if not v_clean or v_clean.upper() in ("N/A", "NONE", "NULL"):
+            return default
+        try:
+            return float(v_clean)
+        except (ValueError, TypeError):
+            return default
+    return default
+
+
 async def validate_video_file(file_path: str, min_size_bytes: int = 500_000) -> tuple[bool, str, dict]:
     """
     Validate that the downloaded file is a genuine, uncorrupted, playable video.
@@ -678,13 +847,26 @@ async def validate_video_file(file_path: str, min_size_bytes: int = 500_000) -> 
         h = v_stream.get("height")
         codec = v_stream.get("codec_name")
 
-        if not w or not h or not codec:
-            return False, "Invalid video stream properties (missing dimensions or codec)", {}
+        dur = (
+            _parse_safe_float(format_info.get("duration"))
+            or _parse_safe_float(v_stream.get("duration"))
+            or _parse_safe_float(v_stream.get("tags", {}).get("DURATION"))
+            or _parse_safe_float(format_info.get("tags", {}).get("DURATION"))
+        )
+        if dur == 0.0:
+            for s in streams:
+                s_dur = _parse_safe_float(s.get("duration"))
+                if s_dur > 0:
+                    dur = s_dur
+                    break
+        if dur == 0.0:
+            bitrate = _parse_safe_float(format_info.get("bit_rate")) or _parse_safe_float(v_stream.get("bit_rate"))
+            if bitrate > 0 and size > 0:
+                dur = (size * 8.0) / bitrate
 
-        dur = float(v_stream.get("duration") or format_info.get("duration") or 0)
         info = {
-            "width": w,
-            "height": h,
+            "width": int(w or 0),
+            "height": int(h or 0),
             "codec": codec,
             "duration": dur,
             "size": size,
@@ -828,6 +1010,7 @@ async def download_media(
     title: str = "video",
     variant_url: str = "",
     referer: str = "",
+    job_id: str | None = None,
 ) -> bool:
     """
     Unified multi-engine downloader:
@@ -845,15 +1028,15 @@ async def download_media(
 
     if is_mp4:
         log.info("Detected direct MP4/file URL, using direct HTTP downloader")
-        ok = await direct_http_download(stream_url, output_path, progress_msg, title, quality, referer=referer)
+        ok = await direct_http_download(stream_url, output_path, progress_msg, title, quality, referer=referer, job_id=job_id)
         if ok:
             return True
         log.warning("Direct HTTP download failed, falling back to FFmpeg")
-        return await ffmpeg_download(stream_url, output_path, progress_msg, title, quality, referer=referer)
+        return await ffmpeg_download(stream_url, output_path, progress_msg, title, quality, referer=referer, job_id=job_id)
 
     # M3U8 stream
     if shutil.which("N_m3u8DL-RE"):
-        ok = await n_m3u8dl_re_download(stream_url, quality, output_path, progress_msg, title, variant_url=variant_url)
+        ok = await n_m3u8dl_re_download(stream_url, quality, output_path, progress_msg, title, variant_url=variant_url, job_id=job_id)
         if ok:
             return True
         log.warning("N_m3u8DL-RE failed for %s, falling back to FFmpeg", stream_url[:60])
@@ -865,9 +1048,9 @@ async def download_media(
         if resolved and resolved != stream_url:
             target_url = resolved
 
-    ok = await ffmpeg_download(target_url, output_path, progress_msg, title, quality, referer=referer)
+    ok = await ffmpeg_download(target_url, output_path, progress_msg, title, quality, referer=referer, job_id=job_id)
     if not ok and target_url != stream_url:
-        ok = await ffmpeg_download(stream_url, output_path, progress_msg, title, quality, referer=referer)
+        ok = await ffmpeg_download(stream_url, output_path, progress_msg, title, quality, referer=referer, job_id=job_id)
 
     return ok
 
@@ -902,9 +1085,6 @@ async def _build_episode_caption_and_markup(
 ) -> tuple[str, InlineKeyboardMarkup | None]:
     import html as htmlmod
     from bot.database import db
-    ep_style = await db.get_ep_style() if db else "classic"
-    if ep_style != "modern":
-        return f"📺 {title} [{quality}]", None
 
     # Parse Series Title, Season, Episode
     m = re.match(r"^(.*?)\s+[Ss](\d+)[Ee](\d+)", title)
@@ -1008,6 +1188,7 @@ async def download_and_upload(
     series_slug: str = "",
     language: str = "",
     is_movie: bool = False,
+    job_id: str | None = None,
 ) -> tuple[bool, Message | None]:
     """Download video + upload via Pyrogram MTProto with progress, custom thumbnail, and dump channel."""
     output_path = str(_TEMP_BASE / filename)
@@ -1015,6 +1196,7 @@ async def download_and_upload(
     thumb_path = None
     custom_thumb_path = None
     tracked_temp_files: set[str] = {output_path}
+    download_job_manager.attach_temp_file(job_id, output_path)
 
     try:
         # 1. Custom Thumbnail System (Point 5 - OFF by default, falls back to AniList poster)
@@ -1082,7 +1264,7 @@ async def download_and_upload(
                 variant_url = resolved_var
 
         success = await download_media(
-            stream_url, quality, output_path, progress_msg, title, variant_url=variant_url, referer=referer
+            stream_url, quality, output_path, progress_msg, title, variant_url=variant_url, referer=referer, job_id=job_id
         )
 
         if not success:
@@ -1177,9 +1359,26 @@ async def download_and_upload(
                 parse_mode=enums.ParseMode.HTML)
             return False, None
 
-        vid_duration = int(meta.get("duration") or 0)
+        vid_duration = int(round(meta.get("duration") or 0))
         vid_width = int(meta.get("width") or 0)
         vid_height = int(meta.get("height") or 0)
+
+        # Fallback duration probe if 0 to prevent 0.00 min on Telegram (Issue #22 & #23)
+        if vid_duration == 0:
+            try:
+                ff_bin = shutil.which("ffprobe")
+                if ff_bin and os.path.exists(output_path):
+                    pr = await asyncio.create_subprocess_exec(
+                        ff_bin, "-v", "error", "-show_entries", "format=duration",
+                        "-of", "default=noprint_wrappers=1:nokey=1", output_path,
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    )
+                    out, _ = await asyncio.wait_for(pr.communicate(), timeout=8)
+                    val = out.decode().strip()
+                    if val and val.replace(".", "", 1).isdigit():
+                        vid_duration = max(1, int(round(float(val))))
+            except Exception as fe:
+                log.debug("Fallback duration probe failed: %s", fe)
 
         # Auto Thumbnail Generator (Issue #8 - Point 9)
         # If user has not uploaded an explicit custom thumbnail, generate a branded 1280x720 HD thumbnail
@@ -1244,6 +1443,8 @@ async def download_and_upload(
         upload_speed = [0.0]
 
         async def _upload_progress(current: int, total: int):
+            if download_job_manager.is_job_cancelled(job_id):
+                raise asyncio.CancelledError("Upload cancelled by user")
             if upload_start[0] == 0:
                 upload_start[0] = time.time()
                 upload_last_time[0] = time.time()
@@ -1258,6 +1459,7 @@ async def download_and_upload(
                 _upload_progress_text(title, quality, current, total, upload_speed[0], time.time() - upload_start[0]),
                 upload_last_edit,
                 interval=3.0,
+                job_id=job_id,
             )
 
         target_upload_chat = destination_channel_id or chat_id
@@ -1544,6 +1746,7 @@ async def download_and_upload(
                     shutil.rmtree(f, ignore_errors=True)
         except Exception:
             pass
+        download_job_manager.remove_job(job_id)
 
 
 def cleanup_vps_temp_files(max_age_seconds: int = 1800) -> int:

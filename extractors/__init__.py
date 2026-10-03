@@ -6,6 +6,7 @@ from .rareanimes import rareanimes
 from .deadtoons import deadtoons
 from .toonworld4all import toonworld4all
 from .toono import toono
+from .animedubhindi import animedubhindi
 from .multisource import multi_source_manager
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "deadtoons",
     "toonworld4all",
     "toono",
+    "animedubhindi",
     "multi_source_manager",
     "is_playable_media_url",
 ]
