@@ -581,65 +581,73 @@ class Database:
                 "language": lang_clean,
                 "updated_at": now,
             }
-            update_set = {
-                f"language_routes.{lang_clean}": route_entry,
-                "updated_at": now,
-            }
-            if series_title:
-                update_set["series_title"] = series_title
-            if poster_url:
-                update_set["poster_url"] = poster_url
-
             existing = await self.channel_mappings.find_one({"series_slug": series_slug})
-            if existing and (existing.get("channel_id") == channel_id or not existing.get("language")):
-                update_set["language"] = lang_clean
+            if existing:
+                update_set = {
+                    f"language_routes.{lang_clean}": route_entry,
+                    "updated_at": now,
+                }
+                if series_title:
+                    update_set["series_title"] = series_title
+                if poster_url:
+                    update_set["poster_url"] = poster_url
+                if existing.get("channel_id") == channel_id or not existing.get("language"):
+                    update_set["language"] = lang_clean
 
-            set_on_insert = {
-                "series_slug": series_slug,
-                "series_title": series_title or series_slug,
-                "channel_id": channel_id,
-                "invite_link": invite_link,
-                "language": lang_clean,
-                "poster_url": poster_url,
-                "auto_created": auto_created,
-                "created_by": created_by,
-                "created_at": now,
-            }
+                await self.channel_mappings.update_one(
+                    {"series_slug": series_slug},
+                    {"$set": update_set}
+                )
+            else:
+                new_doc = {
+                    "series_slug": series_slug,
+                    "series_title": series_title or series_slug,
+                    "channel_id": channel_id,
+                    "invite_link": invite_link,
+                    "language": lang_clean,
+                    "language_routes": {lang_clean: route_entry},
+                    "poster_url": poster_url,
+                    "auto_created": auto_created,
+                    "created_by": created_by,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                await self.channel_mappings.insert_one(new_doc)
 
-            # Remove any keys from set_on_insert that are in update_set to prevent MongoDB WriteError path conflict
-            for k in list(update_set.keys()):
-                set_on_insert.pop(k, None)
-
-            await self.channel_mappings.update_one(
-                {"series_slug": series_slug},
-                {
-                    "$set": update_set,
-                    "$setOnInsert": set_on_insert,
-                },
-                upsert=True,
-            )
             doc = await self.channel_mappings.find_one({"series_slug": series_slug})
             return doc or {}
         else:
-            doc = {
-                "series_slug": series_slug,
-                "series_title": series_title or series_slug,
-                "channel_id": channel_id,
-                "invite_link": invite_link,
-                "poster_url": poster_url,
-                "auto_created": auto_created,
-                "created_by": created_by,
-                "updated_at": now,
-            }
-            await self.channel_mappings.update_one(
-                {"series_slug": series_slug},
-                {
-                    "$set": doc,
-                    "$setOnInsert": {"created_at": now},
-                },
-                upsert=True,
-            )
-            return doc
+            existing = await self.channel_mappings.find_one({"series_slug": series_slug})
+            if existing:
+                update_set = {
+                    "series_title": series_title or existing.get("series_title") or series_slug,
+                    "channel_id": channel_id,
+                    "invite_link": invite_link,
+                    "auto_created": auto_created,
+                    "created_by": created_by,
+                    "updated_at": now,
+                }
+                if poster_url:
+                    update_set["poster_url"] = poster_url
+                await self.channel_mappings.update_one(
+                    {"series_slug": series_slug},
+                    {"$set": update_set}
+                )
+                return {**existing, **update_set}
+            else:
+                new_doc = {
+                    "series_slug": series_slug,
+                    "series_title": series_title or series_slug,
+                    "channel_id": channel_id,
+                    "invite_link": invite_link,
+                    "poster_url": poster_url,
+                    "auto_created": auto_created,
+                    "created_by": created_by,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                await self.channel_mappings.insert_one(new_doc)
+                return new_doc
 
     async def list_channel_mappings(self) -> list[dict]:
         """List all mapped channels."""

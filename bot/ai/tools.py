@@ -755,19 +755,27 @@ async def tool_check_source_status(source: str = "all") -> str:
         ad_diag = {
             "source": "AnimeDekho (Primary)",
             "service_url": "https://animedekho.app",
-            "service_online": True,
+            "service_online": False,
             "catalog_search_working": False,
-            "direct_streams_available": True,
+            "direct_streams_available": False,
             "stream_delivery_method": "Direct unencrypted HLS master playlists (m3u8) on VidStream, Vidmoly, and NeoCDN.",
-            "summary": "AnimeDekho is fully operational with high-speed direct video streams available in 1080p, 720p, 480p.",
+            "summary": "",
         }
         try:
             from api.client import api
-            search_res = await api.search("solo leveling")
+            search_res = await api.search("demon slayer")
+            ad_diag["service_online"] = True
             ad_diag["catalog_search_working"] = bool(search_res)
             ad_diag["sample_results_found"] = len(search_res) if search_res else 0
+            if search_res:
+                ad_diag["direct_streams_available"] = True
+                ad_diag["summary"] = "AnimeDekho is operational and catalog search returned results."
+            else:
+                ad_diag["summary"] = "AnimeDekho is reachable, but returned 0 sample search results."
         except Exception as e:
+            ad_diag["service_online"] = False
             ad_diag["error"] = str(e)
+            ad_diag["summary"] = f"AnimeDekho check failed: {e}"
 
         results["AnimeDekho"] = ad_diag
 
@@ -998,7 +1006,7 @@ async def tool_download_anime_episode(
 
         def _is_4k_satisfying(q_str: str) -> bool:
             q = q_str.lower()
-            return any(k in q for k in ("4k", "2160", "1080", "hq", "10bit", "10-bit", "x265", "hevc"))
+            return any(k in q for k in ("4k", "2160", "uhd"))
 
         # Step 1: For 4K, AnimeDrive is DEFAULT! For other qualities, try AnimeDekho first
         if is_4k and source.lower() in ("animedrive", "auto"):
@@ -1103,10 +1111,25 @@ async def tool_download_anime_episode(
                     source_used = f"ToonFlix ({tf_res.get('server', 'Direct')})"
                     if tf_res.get("poster"):
                         poster_url = tf_res["poster"]
-                else:
-                    notes.append("ToonFlix stream not available")
             except Exception as e:
                 notes.append(f"ToonFlix error: {e}")
+
+        # Step 5: Multi-Source scrapers fallback (AnimeDubHindi, ToonAnime, ToonWorld4All, RareAnimes, DeadToons, TOONo)
+        if not stream_url and source.lower() in ("multisource", "auto"):
+            try:
+                from extractors.multisource import multi_source_manager
+                ms_res = await multi_source_manager.resolve_episode_stream(
+                    anime_title, season=season, episode=episode, quality_pref=quality_pref
+                )
+                if ms_res and ms_res.get("url"):
+                    stream_url = ms_res["url"]
+                    source_used = ms_res.get("source", "MultiSource")
+                    if ms_res.get("poster"):
+                        poster_url = ms_res["poster"]
+                else:
+                    notes.append("MultiSource fallback stream not found")
+            except Exception as e:
+                notes.append(f"MultiSource error: {e}")
 
         if not stream_url:
             err_details = "; ".join(notes) if notes else "No playable stream found"

@@ -422,7 +422,7 @@ async def n_m3u8dl_re_download(
     save_dir = str(Path(output_path).parent)
     origin = _get_origin(stream_url)
 
-    job_id = uuid.uuid4().hex[:8]
+    job_id = job_id or uuid.uuid4().hex[:8]
     job_temp_dir = _TEMP_BASE / f"re_{stem}_{job_id}"
     job_temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -992,6 +992,8 @@ async def fix_or_verify_video_resolution(
                     except Exception:
                         pass
 
+    if target_height >= 2160 and actual_res < 1440:
+        return False, f"Resolution mismatch: requested 4K ({target_height}p) but got {actual_res}p", meta
     if target_height >= 1080 and actual_res <= 540:
         return False, f"Resolution mismatch: requested {target_height}p but got {actual_res}p", meta
     if target_height >= 720 and actual_res <= 360:
@@ -1019,12 +1021,19 @@ async def download_media(
     2. If URL is M3U8: try N_m3u8DL-RE.
     3. If N_m3u8DL-RE fails or is unavailable: fallback to FFmpeg.
     """
-    is_mp4 = (
-        ".mp4" in stream_url.lower() or
-        ".mkv" in stream_url.lower() or
-        "googleusercontent" in stream_url or
-        "instant_dl" in stream_url or
-        (".m3u8" not in stream_url.lower() and ".m3u8" not in variant_url.lower())
+    is_hls = (
+        ".m3u8" in stream_url.lower()
+        or ".m3u8" in variant_url.lower()
+        or "proxyhls" in stream_url.lower()
+        or "playlist" in stream_url.lower()
+        or "manifest" in stream_url.lower()
+    )
+    is_mp4 = not is_hls and (
+        ".mp4" in stream_url.lower()
+        or ".mkv" in stream_url.lower()
+        or "googleusercontent" in stream_url
+        or "instant_dl" in stream_url
+        or "drive.google" in stream_url
     )
 
     if is_mp4:
@@ -1083,6 +1092,8 @@ async def _build_episode_caption_and_markup(
     series_slug: str,
     client: Client,
     target_chat: int,
+    language: str = "",
+    post_style: str = "classic",
 ) -> tuple[str, InlineKeyboardMarkup | None]:
     import html as htmlmod
     from bot.database import db
@@ -1106,33 +1117,44 @@ async def _build_episode_caption_and_markup(
     except Exception:
         pass
 
-    status = (meta.get("status") if meta else None) or "RELEASING"
-    total_eps = (meta.get("episodes") if meta else None) or 12
-    raw_genres = (meta.get("genres") if meta else None) or ["Action", "Adventure", "Fantasy"]
+    status = meta.get("status") if meta else None
+    total_eps = meta.get("episodes") if meta else None
+    raw_genres = (meta.get("genres") if meta else None) or []
 
     formatted_genres = []
     for g in raw_genres[:3]:
         emoji = _GENRE_EMOJIS.get(g, "✨")
         clean_tag = re.sub(r'[^a-zA-Z0-9]', '', g)
         formatted_genres.append(f"{emoji} #{clean_tag}")
-    genres_str = ", ".join(formatted_genres) or "✨ #Anime"
+    genres_str = ", ".join(formatted_genres)
 
-    audio_str = "Multi Audio [ESub]"
+    if language:
+        audio_str = language if ("dub" in language.lower() or "sub" in language.lower()) else f"{language.title()} Dub"
+    elif "hindi" in (s_title + " " + (series_slug or "")).lower():
+        audio_str = "Hindi Dub"
+    elif meta and meta.get("audio"):
+        audio_str = meta["audio"]
+    else:
+        audio_str = "Multi Audio"
 
     bot_me = getattr(client, "me", None)
     bname = bot_me.username if bot_me and bot_me.username else "animedekho"
 
-    caption = (
-        f"✦ <b>{htmlmod.escape(s_title)}</b> ✦\n"
-        f"Season {season_num:02d} • Episode {ep_num:02d}\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"⬡ <b>Audio:</b> {audio_str}\n"
-        f"⬡ <b>Status:</b> {status}\n"
-        f"⬡ <b>Total Episodes:</b> {total_eps}\n\n"
-        f"✦ <b>Genres:</b> {genres_str}\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"✦ <b>Powered By:</b> @{bname}"
-    )
+    caption_lines = [
+        f"✦ <b>{htmlmod.escape(s_title)}</b> ✦",
+        f"Season {season_num:02d} • Episode {ep_num:02d}",
+        "━━━━━━━━━━━━━━━━━━",
+        f"⬡ <b>Audio:</b> {audio_str}",
+    ]
+    if status:
+        caption_lines.append(f"⬡ <b>Status:</b> {status}")
+    if total_eps:
+        caption_lines.append(f"⬡ <b>Total Episodes:</b> {total_eps}")
+    if genres_str:
+        caption_lines.append(f"\n✦ <b>Genres:</b> {genres_str}")
+    caption_lines.append("━━━━━━━━━━━━━━━━━━")
+    caption_lines.append(f"✦ <b>Powered By:</b> @{bname}")
+    caption = "\n".join(caption_lines)
 
     slug = series_slug or re.sub(r'[^a-zA-Z0-9]+', '-', s_title).strip('-').lower()
     from bot.database import db
@@ -1501,9 +1523,11 @@ async def download_and_upload(
         dump_channel_id = await db.get_dump_channel() if db else None
         upload_mode = await db.get_upload_mode() if db else "video"
 
-        # Build style-aware episode caption and quality buttons (Default: classic)
+        post_style = await db.get_post_style() if db else "classic"
+        # Build style-aware episode caption and quality buttons
         caption_text, markup_obj = await _build_episode_caption_and_markup(
-            title=title, quality=quality, series_slug=series_slug, client=client, target_chat=target_upload_chat
+            title=title, quality=quality, series_slug=series_slug, client=client, target_chat=target_upload_chat,
+            language=language, post_style=post_style,
         )
 
         sent_msg = None

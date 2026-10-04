@@ -209,7 +209,17 @@ async def _handle_movies_listing(q: CallbackQuery, page: int):
 
 
 async def _handle_series_detail(client: Client, q: CallbackQuery, slug: str):
-    series = await api.get_series(slug)
+    series = None
+    try:
+        series = await api.get_series(slug)
+    except Exception as e:
+        log.warning("api.get_series failed for '%s' (%s), trying multi_source_manager...", slug, e)
+        from extractors.multisource import multi_source_manager
+        series = await multi_source_manager.get_fallback_series(slug)
+
+    if not series:
+        await _send_text(q, "⚠️ Could not load series details. Please try another anime.")
+        return
 
     text = f"📺 <b>{esc(series.title)}</b>\n\n"
     if series.genres:
@@ -240,7 +250,15 @@ async def _handle_series_detail(client: Client, q: CallbackQuery, slug: str):
 
 
 async def _handle_movie_detail(client: Client, q: CallbackQuery, slug: str):
-    movie = await api.get_movie(slug)
+    movie = None
+    try:
+        movie = await api.get_movie(slug)
+    except Exception as e:
+        log.warning("api.get_movie failed for '%s' (%s), using fallback movie skeleton...", slug, e)
+        from api.models import Movie
+        from utils.helpers import slug_to_title
+        title = slug_to_title(slug)
+        movie = Movie(title=title, slug=slug, url="", description="Available via fallback network.", servers=[])
 
     # Skeleton: show default quality buttons instantly, resolve on download
     from config.settings import settings
@@ -272,7 +290,18 @@ async def _handle_movie_detail(client: Client, q: CallbackQuery, slug: str):
 
 
 async def _handle_season(q: CallbackQuery, slug: str, season: int):
-    series = await api.get_series(slug)
+    series = None
+    try:
+        series = await api.get_series(slug)
+    except Exception as e:
+        log.warning("api.get_series failed for '%s' (%s) in _handle_season, trying fallback...", slug, e)
+        from extractors.multisource import multi_source_manager
+        series = await multi_source_manager.get_fallback_series(slug)
+
+    if not series:
+        await _safe_edit(q, f"⚠️ Season {season} not found.")
+        return
+
     s = series.seasons.get(season)
     if not s:
         await _safe_edit(q, f"⚠️ Season {season} not found.")
@@ -412,7 +441,7 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
 
     def _is_4k_satisfying(q_str: str) -> bool:
         q = q_str.lower()
-        return any(k in q for k in ("4k", "2160", "1080", "hq", "10bit", "10-bit", "x265", "hevc"))
+        return any(k in q for k in ("4k", "2160", "uhd"))
 
     # Multi-source fallback if AnimeDekho has no servers, lacks requested quality, or user requested 4K
     if not candidates or not has_exact or is_4k:
@@ -668,7 +697,7 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
 
     def _is_4k_satisfying(q_str: str) -> bool:
         q = q_str.lower()
-        return any(k in q for k in ("4k", "2160", "1080", "hq", "10bit", "10-bit", "x265", "hevc"))
+        return any(k in q for k in ("4k", "2160", "uhd"))
 
     if not has_exact or is_4k:
         found_4k = False
@@ -1218,10 +1247,12 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
         lookup_title = slug_to_title(series_slug) if series_slug else title
         dest_channel_id = await _resolve_destination_channel(series_slug, lookup_title, poster_url or "")
 
+        attempted_sources: list[str] = []
         for attempt, (srv, quality) in enumerate(candidates, 1):
             if download_job_manager.is_job_cancelled(job_id):
                 return
             chosen_quality = quality
+            attempted_sources.append(srv.name)
             if attempt > 1:
                 try:
                     c_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Download", callback_data=f"cendl:{job_id}")]]) if job_id else None
@@ -1257,10 +1288,11 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                     s_num = int(ep_m.group(1))
                     ep_num = int(ep_m.group(2))
 
-            # Step 1: Multi-source scrapers fallback (AnimeDubHindi, ToonWorld4All, RareAnimes, DeadToons, TOONo)
-            if not is_movie and not any(s.name in ("AnimeDubHindi", "ToonWorld4All", "RareAnimes", "DeadToons", "TOONo", "MultiSource") for s, _ in candidates):
+            # Step 1: Multi-source scrapers fallback (AnimeDubHindi, ToonAnime, ToonWorld4All, RareAnimes, DeadToons, TOONo)
+            if not is_movie and not any(s.name in ("AnimeDubHindi", "ToonAnime", "ToonWorld4All", "RareAnimes", "DeadToons", "TOONo", "MultiSource") for s, _ in candidates):
                 try:
                     from extractors.multisource import multi_source_manager
+                    attempted_sources.append("MultiSource")
                     c_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Download", callback_data=f"cendl:{job_id}")]]) if job_id else None
                     await progress_msg.edit_text(
                         f"🔄 <b>Primary servers failed, checking multi-source scrapers...</b>\n{esc(title)} [{chosen_quality.resolution}]",
@@ -1300,6 +1332,7 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
             if not success and not download_job_manager.is_job_cancelled(job_id) and not any("AnimeDrive" in s.name for s, _ in candidates):
                 try:
                     from extractors.animedrive import animedrive
+                    attempted_sources.append("AnimeDrive")
                     c_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Download", callback_data=f"cendl:{job_id}")]]) if job_id else None
                     await progress_msg.edit_text(
                         f"🔄 <b>AnimeDekho servers failed, trying AnimeDrive fallback...</b>\n{esc(title)} [{chosen_quality.resolution}]",
@@ -1334,6 +1367,7 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
             if not success and not download_job_manager.is_job_cancelled(job_id) and not any("ToonFlix" in s.name for s, _ in candidates):
                 try:
                     from extractors.toonflix import toonflix
+                    attempted_sources.append("ToonFlix")
                     c_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Download", callback_data=f"cendl:{job_id}")]]) if job_id else None
                     await progress_msg.edit_text(
                         f"🔄 <b>Trying ToonFlix fallback...</b>\n{esc(title)} [{chosen_quality.resolution}]",
@@ -1430,8 +1464,12 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
             if bot.logger.bot_logger:
                 await bot.logger.bot_logger.log_download_error(title, "Download/upload failed on all servers")
             try:
+                attempted_txt = ", ".join(dict.fromkeys(attempted_sources)) if attempted_sources else "all available servers"
                 await progress_msg.edit_text(
-                    f"❌ <b>Download Failed</b>\n┌ 📺 {esc(title)}\n└ 💔 Could not download from any server",
+                    f"❌ <b>Download Failed</b>\n"
+                    f"┌ 📺 {esc(title)}\n"
+                    f"├ 🔍 Attempted: {esc(attempted_txt)}\n"
+                    f"└ 💔 Stream currently unavailable on attempted sources. Please try another quality or episode.",
                     parse_mode=enums.ParseMode.HTML,
                 )
             except Exception:

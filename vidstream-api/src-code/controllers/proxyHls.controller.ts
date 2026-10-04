@@ -1,11 +1,17 @@
 import { Request, Response } from "express";
 import { URL as EnvURL } from "../config/server";
+import { isValidProxyUrl } from "../utils/security";
 
 // GET /proxy/hls?url=string
 export default async function (req: Request, res: Response) {
     const url = req.query.url as string;
     if (!url) {
         res.status(400).send('Missing URL parameter');
+        return;
+    }
+
+    if (!isValidProxyUrl(url)) {
+        res.status(403).send('Forbidden: Invalid or unapproved proxy target');
         return;
     }
 

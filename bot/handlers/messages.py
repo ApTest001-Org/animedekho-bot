@@ -62,15 +62,28 @@ async def do_search(client: Client, message: Message, query: str):
                 await message.reply_text("❌ No results found. Try a different name.")
             return
 
+        diag_prefix = ""
+        from config.settings import settings
+        is_admin = bool(user and (user.id == settings.bot.owner_id or user.id in (settings.bot.admin_ids or [])))
+        if is_admin and message.chat.type == enums.ChatType.PRIVATE:
+            src_counts = {}
+            for r in results:
+                s = getattr(r, "source", "AnimeDekho")
+                src_counts[s] = src_counts.get(s, 0) + 1
+            diag_str = ", ".join(f"{k}: {v}" for k, v in src_counts.items())
+            diag_prefix = f"🛠 <b>[Admin Diagnostics]</b> <i>{diag_str}</i>\n\n"
+
+        search_header = f"{diag_prefix}🔍 <b>Results for:</b> {esc(query)}\n\nSelect one:"
+
         try:
             await msg.edit_text(
-                f"🔍 <b>Results for:</b> {esc(query)}\n\nSelect one:",
+                search_header,
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=search_results(results),
             )
         except Exception:
             await message.reply_text(
-                f"🔍 <b>Results for:</b> {esc(query)}\n\nSelect one:",
+                search_header,
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=search_results(results),
             )

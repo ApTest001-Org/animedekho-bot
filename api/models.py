@@ -39,6 +39,7 @@ class SearchResult:
     url: str
     content_type: str           # "series" | "movie"
     poster: str = ""
+    source: str = "AnimeDekho"
 
     @property
     def is_series(self) -> bool:
@@ -75,6 +76,7 @@ class Series:
     poster: str | None = None
     genres: list[str] = field(default_factory=list)
     seasons: dict[int, Season] = field(default_factory=dict)
+    source: str = "AnimeDekho"
 
     @property
     def season_count(self) -> int:

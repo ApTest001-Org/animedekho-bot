@@ -145,15 +145,16 @@ class LibraryManager:
                 f"<blockquote>• {s_part} | {e_part} | #Added {check_emoji}</blockquote>"
             )
 
-            # Build action buttons for notification (Issue #16: strictly private channel join button, no Get File)
+            # Build action buttons for notification
             mapping = await self.db.get_channel_mapping(series_slug, title=series_title) if self.db else None
-            if not mapping or not mapping.get("channel_id"):
-                log.warning("Skipping episode reply notification for '%s': private channel is not mapped", series_slug)
-                return
-
-            sec_join = encode_file_param(f"join_{series_slug}")
-            join_link = f"https://t.me/{self.bot_username}?start={sec_join}"
-            notif_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Open Channel", url=join_link)]])
+            if mapping and mapping.get("channel_id"):
+                sec_join = encode_file_param(f"join_{series_slug}")
+                join_link = f"https://t.me/{self.bot_username}?start={sec_join}"
+                notif_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Open Channel", url=join_link)]])
+            else:
+                sec_join = encode_file_param(f"get_{series_slug}_{q_param}_{episode_key}")
+                join_link = f"https://t.me/{self.bot_username}?start={sec_join}"
+                notif_markup = InlineKeyboardMarkup([[InlineKeyboardButton("⚡ Get Episode", url=join_link)]])
 
             # Send as reply in main channel
             if target_message_id and self.channel:
@@ -248,7 +249,7 @@ class LibraryManager:
         # Get channel mapping (with movie parent anime routing), album mode, and post style
         mapping = await self.db.get_channel_mapping(series_slug, is_movie=is_movie, title=series_title)
         if not mapping or not mapping.get("channel_id"):
-            log.warning("Skipping main channel post for '%s': private channel is not mapped", series_slug)
+            log.info("Main channel post for '%s': private channel not mapped, posting with direct deep-links", series_slug)
             from config import Config
             owner_id = getattr(Config, "OWNER_ID", None)
             if owner_id and self.client:
@@ -256,16 +257,16 @@ class LibraryManager:
                     await self.client.send_message(
                         chat_id=owner_id,
                         text=(
-                            f"⚠️ <b>Private anime channel is not mapped. Please add/map the channel first using /mapchannel.</b>\n\n"
+                            f"⚠️ <b>Private anime channel is not mapped. Please map it using /mapchannel.</b>\n\n"
                             f"📺 <b>Anime:</b> {series_title}\n"
                             f"🏷️ <b>Slug:</b> <code>{series_slug}</code>\n"
-                            f"📁 <b>Episode:</b> {episode_key} ({quality})"
+                            f"📁 <b>Episode:</b> {episode_key} ({quality})\n\n"
+                            f"<i>(Main channel album posted with direct bot deep-links)</i>"
                         ),
                         parse_mode=enums.ParseMode.HTML,
                     )
                 except Exception as we:
                     log.warning("Failed sending unmapped channel warning to owner: %s", we)
-            return
 
         album_mode = await self.db.get_config("album_mode", default="channel")
         post_style = await self.db.get_post_style()
@@ -685,13 +686,26 @@ class LibraryManager:
         else:
             chan_tag = f"@{self.bot_username}"
 
-        caption = (
-            f"<b><blockquote>• Episodes,- {ep_part}\n"
-            f"• Audio track,- {audio_display} | #Official\n"
-            f"• Quality - {quality_display}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━</blockquote></b>\n"
-            f"<b>➥ {chan_tag}</b>"
-        )
+        import html as htmlmod
+        if post_style == "modern":
+            caption = (
+                f"🎬 <b>{htmlmod.escape(title)}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>✦ Season:</b> S{s_num:02d}\n"
+                f"<b>✦ Episodes:</b> {ep_part}\n"
+                f"<b>✦ Audio:</b> {audio_display}\n"
+                f"<b>✦ Qualities:</b> {quality_display}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>➥ {chan_tag}</b>"
+            )
+        else:
+            caption = (
+                f"<b><blockquote>• Episodes,- {ep_part}\n"
+                f"• Audio track,- {audio_display} | #Official\n"
+                f"• Quality - {quality_display}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━</blockquote></b>\n"
+                f"<b>➥ {chan_tag}</b>"
+            )
         return caption
 
     def _build_album_buttons(

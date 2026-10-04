@@ -187,15 +187,12 @@ class ToonflixExtractor:
             if is_4k_request:
                 rankings = {
                     "4K": 1000,
-                    "1080p HQ x265": 950,
-                    "1080p HQ": 900,
-                    "1080p": 800,
-                    "720p HQ": 600,
-                    "720p": 500,
-                    "480p": 300,
-                    "auto": 100,
+                    "2160p": 1000,
                 }
-                return (rankings.get(q_detected, 100), q_detected)
+                score = rankings.get(q_detected, -1)
+                if score < 0:
+                    return (-1, q_detected)
+                return (score, q_detected)
 
             clean_pref = quality_pref.lower().replace("p", "")
             if clean_pref == "480":
@@ -253,12 +250,12 @@ class ToonflixExtractor:
         matched_quality = quality_pref
         if card_candidates:
             _, chosen_rel_go, matched_quality = card_candidates[0]
-        else:
+        elif not is_4k_request:
             # Fallback to any handleLinkClick on page
             m = re.search(r"handleLinkClick\('([^']+)',\s*'download'\)", r_drive.text)
             if m:
                 chosen_rel_go = m.group(1)
-                matched_quality = "1080p HQ" if is_4k_request else quality_pref
+                matched_quality = quality_pref
 
         if chosen_rel_go:
             chosen_rel_go = html_mod.unescape(chosen_rel_go)

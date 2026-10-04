@@ -337,18 +337,14 @@ class AnimeDriveExtractor:
             h_bonus = 20 if is_hub else 0
 
             if is_4k:
-                # 4K tier priority: True 4K -> 1080p HQ x265 -> 1080p HQ -> 1080p -> 720p -> 480p
                 rankings = {
                     "4K": 1000,
-                    "1080p HQ x265": 950,
-                    "1080p HQ": 900,
-                    "1080p": 800,
-                    "720p HQ": 600,
-                    "720p": 500,
-                    "480p": 300,
-                    "auto": 100,
+                    "2160p": 1000,
                 }
-                return (rankings.get(q_detected, 100) + h_bonus, q_detected)
+                score = rankings.get(q_detected, -1)
+                if score < 0:
+                    return (-1, q_detected)
+                return (score + h_bonus, q_detected)
 
             clean_pref = quality_pref.lower().replace("p", "")
             if clean_pref == "480":

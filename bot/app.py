@@ -147,13 +147,15 @@ async def _on_start(client: Client):
 
     async def _periodic_vps_cleanup():
         while True:
-            await asyncio.sleep(1800)
             try:
+                await asyncio.sleep(1800)
                 cleanup_vps_temp_files(max_age_seconds=1800)
+            except asyncio.CancelledError:
+                break
             except Exception:
                 pass
 
-    asyncio.create_task(_periodic_vps_cleanup())
+    client._vps_cleanup_task = asyncio.create_task(_periodic_vps_cleanup())
 
     # Set bot commands menu
     from bot.telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
@@ -235,8 +237,12 @@ async def _on_stop(client: Client):
     if userbot_manager:
         await userbot_manager.stop()
     from bot.child_bots import child_bot_manager
-    if child_bot_manager:
-        await child_bot_manager.stop()
+    if hasattr(client, "_vps_cleanup_task") and client._vps_cleanup_task:
+        client._vps_cleanup_task.cancel()
+        try:
+            await client._vps_cleanup_task
+        except (asyncio.CancelledError, Exception):
+            pass
     from utils.http import http_client
     await http_client.close()
     from bot.database import db

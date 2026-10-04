@@ -15,6 +15,7 @@ from extractors.rareanimes import rareanimes
 from extractors.deadtoons import deadtoons
 from extractors.toonworld4all import toonworld4all
 from extractors.toono import toono
+from extractors.toonanime import toonanime
 from extractors.resolver import resolve_player_url
 from extractors.shortener import is_shortener, detect_and_bypass, is_valid_media_destination
 
@@ -32,9 +33,11 @@ class MultiSourceManager:
             ("RareAnimes", rareanimes),
             ("DeadToons", deadtoons),
             ("TOONo", toono),
+            ("ToonAnime", toonanime),
             ("AnimeDrive", animedrive),
             ("ToonFlix", toonflix),
         ]
+        self._slug_registry: dict[str, dict] = {}
 
     async def search_fallback(self, query: str) -> list[SearchResult]:
         """Search fallback sources when primary AnimeDekho returns 0 results."""
@@ -60,12 +63,23 @@ class MultiSourceManager:
                     seen_slugs.add(slug)
 
                     is_movie = "movie" in title.lower() or "film" in title.lower()
+                    self._slug_registry[slug] = {
+                        "source": name,
+                        "title": title,
+                        "url": url,
+                        "poster": poster,
+                        "content_type": "movie" if is_movie else "series",
+                    }
+                    from utils.helpers import short_slug
+                    self._slug_registry[short_slug(slug)] = self._slug_registry[slug]
+
                     results.append(SearchResult(
                         title=f"{title} [{name}]",
                         slug=slug,
                         url=url,
                         content_type="movie" if is_movie else "series",
                         poster=poster,
+                        source=name,
                     ))
 
                 if len(results) >= 10:
@@ -74,6 +88,55 @@ class MultiSourceManager:
                 log.warning("Fallback search on %s failed for '%s': %s", name, query, e)
 
         return results
+
+    async def get_fallback_series(self, slug: str):
+        """Construct Series model for fallback sources when AnimeDekho fails with 403 or series is missing."""
+        from api.models import Series, Season, Episode
+        from utils.helpers import short_slug
+
+        item = self._slug_registry.get(slug) or self._slug_registry.get(short_slug(slug))
+        title = item.get("title") if item else slug_to_title(slug)
+        url = item.get("url", "") if item else ""
+        poster = item.get("poster") if item else ""
+        source = item.get("source", "MultiSource") if item else "MultiSource"
+
+        total_eps = 12
+        genres = []
+        try:
+            from utils.anilist import get_anilist_metadata
+            meta = await get_anilist_metadata(title)
+            if meta:
+                if meta.get("episodes"):
+                    total_eps = min(meta["episodes"], 48)
+                if meta.get("cover"):
+                    poster = poster or meta["cover"]
+                if meta.get("genres"):
+                    genres = meta["genres"]
+        except Exception:
+            pass
+
+        episodes = [
+            Episode(
+                number=i,
+                slug=f"{slug}-1x{i}",
+                season=1,
+                title=f"{title} S1E{i:02d}",
+                servers=[],
+            )
+            for i in range(1, total_eps + 1)
+        ]
+        season = Season(number=1, episodes=episodes)
+
+        return Series(
+            title=title,
+            slug=slug,
+            url=url,
+            description=f"Available via {source} network.",
+            poster=poster or None,
+            genres=genres,
+            seasons={1: season},
+            source=source,
+        )
 
     async def resolve_episode_stream(
         self,

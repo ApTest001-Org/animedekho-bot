@@ -102,10 +102,10 @@ class Config:
     )
 
     # UI Styles: "classic" or "modern"
-    START_STYLE = os.environ.get("START_STYLE", "classic").lower()
-    SCHED_STYLE = os.environ.get("SCHED_STYLE", "classic").lower()
-    EP_STYLE = os.environ.get("EP_STYLE", "classic").lower()
-    POST_STYLE = os.environ.get("POST_STYLE", "classic").lower()
+    START_STYLE = os.environ.get("START_STYLE", "modern").lower()
+    SCHED_STYLE = os.environ.get("SCHED_STYLE", "modern").lower()
+    EP_STYLE = os.environ.get("EP_STYLE", "modern").lower()
+    POST_STYLE = os.environ.get("POST_STYLE", "modern").lower()
 
     # ── Telegram Premium Custom Emojis (Issue #10) ────────────────────────
     # Enable rendering of Telegram Premium Custom Emojis (<emoji id="...">)
