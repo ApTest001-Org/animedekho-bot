@@ -38,6 +38,21 @@ class ToonAnimeExtractor:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._sync_search, query)
 
+    def _is_dead_challenge_page(self, text: str, final_url: str = "") -> bool:
+        """Issue #27: all known ToonAnime mirrors currently return a JS
+        challenge → domain-parking page (ww*.toonanime.*). Detect it fast so
+        MultiSource moves on to live providers instead of hanging."""
+        t = (text or "").lower()
+        if "window.location.replace" in t and len(text or "") < 2000:
+            return True
+        parking_hints = ("ww547.", "ww80.", "?tkn=", "parking", "domain is parked")
+        if any(h in (text or "") + final_url for h in parking_hints):
+            return True
+        # Parking template: dark 600px centered page titled exactly "Toonanime"
+        if len(text or "") < 40000 and "<title>Toonanime</title>" in (text or "") and "max-width: 600px" in t:
+            return True
+        return False
+
     def _sync_search(self, query: str) -> list[dict]:
         s = _get_scraper()
         clean = re.sub(
@@ -54,9 +69,16 @@ class ToonAnimeExtractor:
                 # Check for JS challenge redirect
                 m = re.search(r"window\.location\.replace\('([^']+)'\)", r.text)
                 if m:
-                    r = s.get(m.group(1), headers={"Referer": url}, timeout=10)
+                    try:
+                        r = s.get(m.group(1), headers={"Referer": url}, timeout=10)
+                    except Exception as ce:
+                        log.debug("ToonAnime challenge follow failed on %s: %s", base, ce)
+                        continue
 
                 if r.status_code != 200 or len(r.text) < 1000:
+                    continue
+                if self._is_dead_challenge_page(r.text, str(getattr(r, "url", ""))):
+                    log.info("ToonAnime %s is parked/challenged — skipping mirror", base)
                     continue
 
                 soup = BeautifulSoup(r.text, "html.parser")
@@ -127,8 +149,24 @@ class ToonAnimeExtractor:
         if not search_results:
             return None
 
-        # Best match series
-        target_series = search_results[0]
+        # V2 #16: fuzzy best-match series (not blindly first result).
+        # Score by shared title tokens + season token presence.
+        def _score(title: str) -> int:
+            q_toks = set(re.sub(r"[^a-z0-9 ]", " ", anime_title.lower()).split())
+            t_toks = set(re.sub(r"[^a-z0-9 ]", " ", (title or "").lower()).split())
+            stop = {"season", "hindi", "dubbed", "multi", "audio", "the", "a", "an"}
+            q_toks -= stop
+            t_toks -= stop
+            overlap = len(q_toks & t_toks)
+            bonus = 2 if str(season) in (title or "") else 0
+            return overlap * 10 + bonus - abs(len(t_toks) - len(q_toks))
+
+        ranked = sorted(search_results, key=lambda r: _score(r.get("title", "")), reverse=True)
+        # Reject clearly wrong anime (no token overlap at all).
+        if _score(ranked[0].get("title", "")) <= 0:
+            log.info("ToonAnime: no confident series match for '%s' — rejecting", anime_title)
+            return None
+        target_series = ranked[0]
         series_url = target_series["url"]
 
         try:
@@ -160,29 +198,75 @@ class ToonAnimeExtractor:
             r_ep = s.get(ep_url, timeout=12)
             if r_ep.status_code != 200:
                 return None
+            if self._is_dead_challenge_page(r_ep.text, str(getattr(r_ep, "url", ""))):
+                log.info("ToonAnime episode page is parked/challenged — skipping")
+                return None
             soup_ep = BeautifulSoup(r_ep.text, "html.parser")
 
-            # Check iframes for player embeds
-            for iframe in soup_ep.find_all("iframe"):
-                src = iframe.get("src", "")
-                if src:
-                    return {
-                        "url": src,
-                        "quality": quality_pref,
-                        "source": "ToonAnime",
-                        "poster": target_series.get("poster"),
-                    }
+            # V2 #16: quality-aware link selection (not first iframe/link).
+            # Collect all candidates with surrounding text, score by requested
+            # quality tokens, return the ACTUAL detected quality.
+            def _detect_quality(url: str, label: str) -> str:
+                blob = f"{url} {label}".lower()
+                for q in ("2160p", "2160", "4k", "uhd"):
+                    if q in blob:
+                        return "4K"
+                for q in ("1080p", "1080"):
+                    if q in blob:
+                        return "1080p"
+                for q in ("720p", "720"):
+                    if q in blob:
+                        return "720p"
+                for q in ("480p", "480"):
+                    if q in blob:
+                        return "480p"
+                for q in ("360p", "360"):
+                    if q in blob:
+                        return "360p"
+                return ""
 
-            # Check for direct download links
+            pref_l = quality_pref.lower()
+            scored: list[tuple[int, str, str]] = []
+
+            for iframe in soup_ep.find_all("iframe"):
+                src = (iframe.get("src") or "").strip()
+                if not src or src.startswith("about:") or len(src) < 10:
+                    continue
+                parent_txt = (iframe.parent.get_text(" ", strip=True) if iframe.parent else "")[:200]
+                det = _detect_quality(src, parent_txt)
+                score = 10 if det.lower() == pref_l else (5 if det else 0)
+                # Prefer http(s) embeds over relative/js stubs
+                if src.startswith("http"):
+                    score += 2
+                scored.append((score, src, det or quality_pref))
+
             for a in soup_ep.find_all("a", href=True):
-                href = a["href"]
-                if any(x in href.lower() for x in ("drive.google", "mega.nz", "mediafire", "streamwish", "hubcloud")):
-                    return {
-                        "url": href,
-                        "quality": quality_pref,
-                        "source": "ToonAnime",
-                        "poster": target_series.get("poster"),
-                    }
+                href = (a["href"] or "").strip()
+                if not href.startswith("http"):
+                    continue
+                low = href.lower()
+                if not any(x in low for x in ("drive.google", "mega.nz", "mediafire", "streamwish", "hubcloud", ".mp4", ".mkv", ".m3u8")):
+                    continue
+                label = a.get_text(" ", strip=True)[:200]
+                det = _detect_quality(href, label)
+                score = 10 if det.lower() == pref_l else (5 if det else 1)
+                # Direct files outrank generic embeds on ties
+                if any(x in low for x in (".mp4", ".mkv", ".m3u8", "drive.google")):
+                    score += 1
+                scored.append((score, href, det or quality_pref))
+
+            if not scored:
+                return None
+            scored.sort(key=lambda t: t[0], reverse=True)
+            best_score, best_url, best_q = scored[0]
+            log.info("ToonAnime: %d candidate(s), picked %s [%s] score=%d for '%s' S%dE%d",
+                     len(scored), best_url[:80], best_q, best_score, anime_title, season, episode)
+            return {
+                "url": best_url,
+                "quality": best_q,
+                "source": "ToonAnime",
+                "poster": target_series.get("poster"),
+            }
         except Exception as e:
             log.warning("ToonAnime resolve error for '%s' S%dE%d: %s", anime_title, season, episode, e)
 

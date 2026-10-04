@@ -16,6 +16,7 @@ from .admin import (
     cmd_setaudio, map_audio_callback, cmd_postsched,
 )
 from .admin_ai import cmd_setai, cmd_ai
+from .bypass import cmd_bypass
 from .worker_admin import (
     cmd_stats, cmd_users_count, cmd_ban, cmd_unban,
     cmd_broadcast, cmd_pbroadcast, cmd_dbroadcast,
@@ -58,6 +59,8 @@ def register_handlers(app: Client):
     # Owner AI commands
     app.add_handler(MessageHandler(cmd_setai, filters.command("setai") & filters.private))
     app.add_handler(MessageHandler(cmd_ai, filters.command("ai") & filters.private))
+    # Manual URL resolver (V2 #23, owner-only inside handler)
+    app.add_handler(MessageHandler(cmd_bypass, filters.command("bypass") & filters.private))
 
     # Admin commands (owner-only, checked inside each handler)
     app.add_handler(MessageHandler(cmd_adduser, filters.command("adduser") & filters.private))

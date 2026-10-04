@@ -146,16 +146,38 @@ async def _on_start(client: Client):
         log.warning("Initial VPS cleanup error: %s", ce)
 
     async def _periodic_vps_cleanup():
+        # V2 #1: single lifecycle-managed task — temp files + MongoDB junk prune.
+        # Task reference is stored on the client and cancelled in _on_stop.
         while True:
             try:
                 await asyncio.sleep(1800)
-                cleanup_vps_temp_files(max_age_seconds=1800)
+                try:
+                    cleanup_vps_temp_files(max_age_seconds=1800)
+                except Exception as ce:
+                    log.warning("Periodic VPS temp cleanup error: %s", ce)
+                try:
+                    from bot.database import db as app_db
+                    if app_db:
+                        await app_db.prune_old_data(
+                            downloads_days=30, errors_days=14, max_downloads=5000
+                        )
+                except Exception as de:
+                    log.warning("Periodic MongoDB prune error: %s", de)
             except asyncio.CancelledError:
                 break
             except Exception:
                 pass
 
+    # V2 #1: keep a single named reference so shutdown can cancel cleanly.
+    # If a previous task somehow exists (hot-reload), cancel it first.
+    try:
+        old_task = getattr(client, "_vps_cleanup_task", None)
+        if old_task and not old_task.done():
+            old_task.cancel()
+    except Exception:
+        pass
     client._vps_cleanup_task = asyncio.create_task(_periodic_vps_cleanup())
+    log.info("Periodic VPS + MongoDB cleanup task started (every 30m)")
 
     # Set bot commands menu
     from bot.telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
@@ -179,6 +201,7 @@ async def _on_start(client: Client):
                 BotCommand("schedule", "Anime airing schedule"),
                 BotCommand("ai", "Autonomous AI Agent"),
                 BotCommand("setai", "Configure AI model, key & persona"),
+                BotCommand("bypass", "Manually resolve a source URL (owner)"),
                 BotCommand("help", "Show help message"),
                 BotCommand("adduser", "Approve a user"),
                 BotCommand("removeuser", "Remove a user"),
@@ -236,13 +259,28 @@ async def _on_stop(client: Client):
     from bot.userbot import userbot_manager
     if userbot_manager:
         await userbot_manager.stop()
-    from bot.child_bots import child_bot_manager
+    # V2 #1: stop child bot swarm clients so sessions don't leak.
+    try:
+        from bot.child_bots import child_bot_manager
+        if child_bot_manager:
+            stop_fn = getattr(child_bot_manager, "stop", None)
+            if callable(stop_fn):
+                res = stop_fn()
+                if asyncio.iscoroutine(res):
+                    await res
+    except Exception as e:
+        log.warning("Child bot manager stop error: %s", e)
+    # V2 #1: cancel the periodic cleanup task with a proper await.
     if hasattr(client, "_vps_cleanup_task") and client._vps_cleanup_task:
-        client._vps_cleanup_task.cancel()
+        try:
+            client._vps_cleanup_task.cancel()
+        except Exception:
+            pass
         try:
             await client._vps_cleanup_task
         except (asyncio.CancelledError, Exception):
             pass
+        client._vps_cleanup_task = None
     from utils.http import http_client
     await http_client.close()
     from bot.database import db

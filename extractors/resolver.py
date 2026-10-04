@@ -473,7 +473,7 @@ async def _resolve_fireplayer(url: str) -> dict | None:
             "X-Requested-With": "XMLHttpRequest",
             "Origin": base_url,
         }
-        post_data = {"hash": video_id, "r": "https://animedekho.app/"}
+        post_data = {"hash": video_id, "r": "https://animedekho.tv/"}
         
         import json
         res_text = await http_client.post_no_cache(api_url, data=post_data, headers=headers)
@@ -508,7 +508,7 @@ async def _resolve_vidsrc_xerver(url: str) -> dict | None:
     encrypted_url = qs.get("url", [""])[0]
 
     if not encrypted_url:
-        html = await http_client.get(url, headers={"Referer": "https://animedekho.app/"})
+        html = await http_client.get(url, headers={"Referer": "https://animedekho.tv/"})
         m = re.search(r'ENCRYPTED_URL\s*=\s*["\']([^"\']+)["\']', html)
         if m:
             encrypted_url = m.group(1)

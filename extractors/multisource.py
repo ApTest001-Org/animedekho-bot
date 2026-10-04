@@ -39,6 +39,23 @@ class MultiSourceManager:
         ]
         self._slug_registry: dict[str, dict] = {}
 
+    def get_source_for_slug(self, slug: str) -> str | None:
+        """V2 #11-#13: return the provider that produced this slug, if any.
+
+        Lets callbacks preserve the user's selected-source context instead
+        of re-routing everything through AnimeDekho.
+        """
+        if not slug:
+            return None
+        try:
+            from utils.helpers import short_slug
+            item = self._slug_registry.get(slug) or self._slug_registry.get(short_slug(slug))
+            if item:
+                return item.get("source")
+        except Exception:
+            pass
+        return None
+
     async def search_fallback(self, query: str) -> list[SearchResult]:
         """Search fallback sources when primary AnimeDekho returns 0 results."""
         results: list[SearchResult] = []
@@ -90,7 +107,14 @@ class MultiSourceManager:
         return results
 
     async def get_fallback_series(self, slug: str):
-        """Construct Series model for fallback sources when AnimeDekho fails with 403 or series is missing."""
+        """Build a Series model for fallback sources.
+
+        V2 #17: never fabricate a fake episode list. If the provider page
+        yields a real episode count (via AniList) we use it as an *estimate*
+        clearly labelled in the description; otherwise we return the series
+        with empty seasons so the UI shows 'episode list unavailable' instead
+        of a fake default-12 list.
+        """
         from api.models import Series, Season, Episode
         from utils.helpers import short_slug
 
@@ -100,20 +124,36 @@ class MultiSourceManager:
         poster = item.get("poster") if item else ""
         source = item.get("source", "MultiSource") if item else "MultiSource"
 
-        total_eps = 12
+        total_eps: int | None = None
         genres = []
         try:
             from utils.anilist import get_anilist_metadata
             meta = await get_anilist_metadata(title)
             if meta:
                 if meta.get("episodes"):
-                    total_eps = min(meta["episodes"], 48)
+                    total_eps = min(int(meta["episodes"]), 48)
                 if meta.get("cover"):
                     poster = poster or meta["cover"]
                 if meta.get("genres"):
                     genres = meta["genres"]
         except Exception:
             pass
+
+        if not total_eps:
+            # No verified count — return shell with no fake episodes.
+            return Series(
+                title=title,
+                slug=slug,
+                url=url,
+                description=(
+                    f"Available via {source} network. "
+                    f"Episode list unavailable — open the source page or use /bypass."
+                ),
+                poster=poster or None,
+                genres=genres,
+                seasons={},
+                source=source,
+            )
 
         episodes = [
             Episode(
@@ -131,7 +171,7 @@ class MultiSourceManager:
             title=title,
             slug=slug,
             url=url,
-            description=f"Available via {source} network.",
+            description=f"Available via {source} network. (~{total_eps} eps estimated via AniList)",
             poster=poster or None,
             genres=genres,
             seasons={1: season},
@@ -145,18 +185,26 @@ class MultiSourceManager:
         episode: int = 1,
         quality_pref: str = "1080p",
         series_slug: str = "",
+        preferred_source: str | None = None,
     ) -> dict | None:
         """
         Iterate through fallback scrapers to resolve an episode stream.
         Applies full resolver pipeline (shortener -> HubCloud -> player embed -> validation).
         Never returns intermediate HTML or ad pages!
+        V2 #13: when ``preferred_source`` (the user's selected button source)
+        is given, that extractor is tried first before the default order.
         """
         clean_title = re.sub(r"(?i)\s*(?:season\s*\d+|s\d+|hindi|dubbed|subbed|multi-audio|tamil|telugu).*$", "", series_title).strip()
         search_title = clean_title or series_title or slug_to_title(series_slug)
         search_title = re.sub(r"[’'\"\-_:!?]+", " ", search_title).strip()
         search_title = re.sub(r"\s+", " ", search_title)
 
-        for name, extractor in self.sources:
+        ordered = list(self.sources)
+        if preferred_source:
+            pref = preferred_source.strip().lower()
+            ordered.sort(key=lambda kv: 0 if kv[0].lower() == pref else 1)
+
+        for name, extractor in ordered:
             try:
                 log.info("Trying fallback source '%s' for '%s' S%dE%d [%s]...", name, search_title, season, episode, quality_pref)
                 res = await extractor.resolve_episode(

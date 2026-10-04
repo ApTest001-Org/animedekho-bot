@@ -222,7 +222,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "check_source_status",
-            "description": "Perform a live diagnostic health check on streaming sources: AnimeDekho (Primary), AnimeDrive (Secondary), and ToonFlix (Tertiary), checking site connectivity, catalog search, and direct stream availability.",
+            "description": "Perform a live diagnostic health check on streaming sources with real HTTP verification: direct-file providers first (AnimeDubHindi, ToonWorld4All, AnimeDrive, ToonFlix), AnimeDekho last as fallback. Verifies homepage reachability, catalog search, and actual stream resolvability.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -331,7 +331,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "download_anime_episode",
-            "description": "Autonomous master tool to download any anime episode or movie and send it directly to the Telegram chat. Checks library cache first to deliver existing files instantly without re-downloading, saves new files to the Main Channel Library, and cascades across AnimeDekho, AnimeDrive (4K default), and ToonFlix.",
+            "description": "Autonomous master tool to download any anime episode or movie and send it directly to the Telegram chat. Checks library cache first, then cascades direct-file sources FIRST (AnimeDubHindi/ToonWorld4All via MultiSource → AnimeDrive → ToonFlix) with AnimeDekho LAST as fallback.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -752,26 +752,63 @@ async def tool_check_source_status(source: str = "all") -> str:
     results = {}
 
     if source.lower() in ("animedekho", "all"):
+        from config.settings import settings as _settings
+        _live_base = _settings.site.base_url
         ad_diag = {
-            "source": "AnimeDekho (Primary)",
-            "service_url": "https://animedekho.app",
+            "source": "AnimeDekho (Fallback — tried last)",
+            "service_url": _live_base,
             "service_online": False,
+            "website_http_status": None,
             "catalog_search_working": False,
             "direct_streams_available": False,
             "stream_delivery_method": "Direct unencrypted HLS master playlists (m3u8) on VidStream, Vidmoly, and NeoCDN.",
             "summary": "",
         }
         try:
-            from api.client import api
-            search_res = await api.search("demon slayer")
-            ad_diag["service_online"] = True
-            ad_diag["catalog_search_working"] = bool(search_res)
-            ad_diag["sample_results_found"] = len(search_res) if search_res else 0
-            if search_res:
-                ad_diag["direct_streams_available"] = True
-                ad_diag["summary"] = "AnimeDekho is operational and catalog search returned results."
+            # V2 #4: real live verification — homepage GET first, never assume online.
+            import cloudscraper as _cs
+            _s = _cs.create_scraper(browser={"browser": "chrome", "platform": "windows", "desktop": True})
+            _r = await asyncio.to_thread(_s.get, _live_base, timeout=10)
+            ad_diag["website_http_status"] = _r.status_code
+            ad_diag["service_online"] = (_r.status_code == 200 and len(_r.text) > 5000)
+            if not ad_diag["service_online"]:
+                ad_diag["summary"] = f"AnimeDekho homepage unreachable (HTTP {ad_diag['website_http_status']})."
             else:
-                ad_diag["summary"] = "AnimeDekho is reachable, but returned 0 sample search results."
+                from api.client import api
+                search_res = await api.search("demon slayer")
+                ad_diag["catalog_search_working"] = bool(search_res)
+                ad_diag["sample_results_found"] = len(search_res) if search_res else 0
+                if search_res:
+                    # Verify an actual playable stream, not just catalog hits.
+                    try:
+                        from extractors.resolver import resolve_player_url as _rpu
+                        _series = await api.get_series(search_res[0].slug) if search_res[0].is_series else None
+                        _stream_ok = False
+                        if _series and _series.seasons:
+                            _s1 = _series.seasons.get(1) or list(_series.seasons.values())[0]
+                            if _s1.episodes:
+                                _ep = await api.get_episode(_s1.episodes[0].slug)
+                                for _srv in (_ep.servers[:2] if _ep.servers else []):
+                                    try:
+                                        _rs = await api.resolve_server(_srv)
+                                        if _rs.player_url:
+                                            _st = await _rpu(_rs.player_url)
+                                            if _st and _st.get("url"):
+                                                _stream_ok = True
+                                                break
+                                    except Exception:
+                                        continue
+                        ad_diag["direct_streams_available"] = bool(_stream_ok)
+                        ad_diag["summary"] = (
+                            "AnimeDekho is operational with verified playable streams."
+                            if _stream_ok else
+                            "AnimeDekho is reachable and search works, but no playable stream verified on sample episode."
+                        )
+                    except Exception as ve:
+                        ad_diag["direct_streams_available"] = False
+                        ad_diag["summary"] = f"AnimeDekho reachable, search OK, stream verify failed: {ve}"
+                else:
+                    ad_diag["summary"] = "AnimeDekho is reachable, but returned 0 sample search results."
         except Exception as e:
             ad_diag["service_online"] = False
             ad_diag["error"] = str(e)
@@ -1008,69 +1045,40 @@ async def tool_download_anime_episode(
             q = q_str.lower()
             return any(k in q for k in ("4k", "2160", "uhd"))
 
-        # Step 1: For 4K, AnimeDrive is DEFAULT! For other qualities, try AnimeDekho first
-        if is_4k and source.lower() in ("animedrive", "auto"):
+        # V2 #3: direct-file sources FIRST, AnimeDekho LAST.
+        # Order: MultiSource (AnimeDubHindi/ToonWorld4All/...) → AnimeDrive
+        # → ToonFlix → AnimeDekho (fallback). Explicit `source=` still forces
+        # a single provider; "auto" follows the cascade.
+        want_direct = source.lower() in ("auto", "multisource", "animedubhindi", "toonworld4all", "toonanime", "rareanimes", "deadtoons", "toono")
+
+        # Step 1 FIRST: direct-file MultiSource (covers 4K too when available).
+        if not stream_url and want_direct:
             try:
                 await status_msg.edit_text(
-                    f"🤖 <b>{name}</b>: Locating 4K UHD / 1080p HQ stream on AnimeDrive (Default for 4K) for <b>{display_title}</b>...",
+                    f"🤖 <b>{name}</b>: Trying direct sources (AnimeDubHindi/ToonWorld) for <b>{display_title}</b> [{quality_pref}]...",
                     parse_mode=enums.ParseMode.HTML,
                 )
             except Exception:
                 pass
-
             try:
-                from extractors.animedrive import animedrive, is_playable_media_url
-                ad_res = await animedrive.resolve_episode(anime_title, season=season, episode=episode, quality_pref="4K")
-                if ad_res and ad_res.get("url") and is_playable_media_url(ad_res["url"]) and _is_4k_satisfying(ad_res.get("quality", "")):
-                    stream_url = ad_res["url"]
-                    source_used = f"AnimeDrive ({ad_res.get('server', 'Direct')})"
-                    if ad_res.get("poster"):
-                        poster_url = ad_res["poster"]
-                else:
-                    notes.append("AnimeDrive 4K/HQ stream not found")
-            except Exception as e:
-                notes.append(f"AnimeDrive error: {e}")
-
-            # If AnimeDrive does not have 4K, switch to ToonFlix (also has 4K quality)
-            if not stream_url and source.lower() in ("toonflix", "auto"):
-                try:
-                    await status_msg.edit_text(
-                        f"🤖 <b>{name}</b>: AnimeDrive lacks 4K, switching to ToonFlix (4K) for <b>{display_title}</b>...",
-                        parse_mode=enums.ParseMode.HTML,
-                    )
-                except Exception:
-                    pass
-
-                try:
-                    from extractors.toonflix import toonflix
-                    tf_res = await toonflix.resolve_episode(anime_title, season=season, episode=episode, quality_pref="4K")
-                    if tf_res and tf_res.get("url") and _is_4k_satisfying(tf_res.get("quality", "")):
-                        stream_url = tf_res["url"]
-                        source_used = f"ToonFlix ({tf_res.get('server', 'Direct')})"
-                        if tf_res.get("poster"):
-                            poster_url = tf_res["poster"]
+                from extractors.multisource import multi_source_manager
+                ms_res = await multi_source_manager.resolve_episode_stream(
+                    anime_title, season=season, episode=episode, quality_pref=quality_pref
+                )
+                if ms_res and ms_res.get("url"):
+                    if is_4k and not _is_4k_satisfying(ms_res.get("quality", "")):
+                        notes.append(f"MultiSource {ms_res.get('quality')} is not 4K — continuing cascade")
                     else:
-                        notes.append("ToonFlix 4K/HQ stream not found")
-                except Exception as e:
-                    notes.append(f"ToonFlix error: {e}")
-
-        # Step 2: Try AnimeDekho for standard resolutions (Primary ultra-fast direct HLS)
-        if not stream_url and source.lower() in ("animedekho", "auto"):
-            try:
-                stream_obj, srv_name = await _resolve_animedekho_stream(anime_title, season, episode, quality_pref)
-                if stream_obj and stream_obj.get("url"):
-                    stream_url = stream_obj["url"]
-                    source_used = srv_name
-                    for q in stream_obj.get("qualities", []):
-                        if hasattr(q, "resolution") and q.resolution.lower() == quality_pref.lower() and q.url:
-                            variant_url = q.url
-                            break
+                        stream_url = ms_res["url"]
+                        source_used = ms_res.get("source", "MultiSource")
+                        if ms_res.get("poster"):
+                            poster_url = ms_res["poster"]
                 else:
-                    notes.append("AnimeDekho episode servers not available")
+                    notes.append("MultiSource fallback stream not found")
             except Exception as e:
-                notes.append(f"AnimeDekho error: {e}")
+                notes.append(f"MultiSource error: {e}")
 
-        # Step 3: Secondary fallback to AnimeDrive for standard resolutions
+        # Step 2: AnimeDrive (DEFAULT for 4K).
         if not stream_url and source.lower() in ("animedrive", "auto"):
             try:
                 await status_msg.edit_text(
@@ -1114,22 +1122,28 @@ async def tool_download_anime_episode(
             except Exception as e:
                 notes.append(f"ToonFlix error: {e}")
 
-        # Step 5: Multi-Source scrapers fallback (AnimeDubHindi, ToonAnime, ToonWorld4All, RareAnimes, DeadToons, TOONo)
-        if not stream_url and source.lower() in ("multisource", "auto"):
+        # Step 4 LAST: AnimeDekho fallback (V2 #3 — tried last, not first).
+        if not stream_url and source.lower() in ("animedekho", "auto"):
             try:
-                from extractors.multisource import multi_source_manager
-                ms_res = await multi_source_manager.resolve_episode_stream(
-                    anime_title, season=season, episode=episode, quality_pref=quality_pref
+                await status_msg.edit_text(
+                    f"🤖 <b>{name}</b>: Direct sources missed — trying AnimeDekho fallback for <b>{display_title}</b> [{quality_pref}]...",
+                    parse_mode=enums.ParseMode.HTML,
                 )
-                if ms_res and ms_res.get("url"):
-                    stream_url = ms_res["url"]
-                    source_used = ms_res.get("source", "MultiSource")
-                    if ms_res.get("poster"):
-                        poster_url = ms_res["poster"]
+            except Exception:
+                pass
+            try:
+                stream_obj, srv_name = await _resolve_animedekho_stream(anime_title, season, episode, quality_pref)
+                if stream_obj and stream_obj.get("url"):
+                    stream_url = stream_obj["url"]
+                    source_used = srv_name
+                    for q in stream_obj.get("qualities", []):
+                        if hasattr(q, "resolution") and q.resolution.lower() == quality_pref.lower() and q.url:
+                            variant_url = q.url
+                            break
                 else:
-                    notes.append("MultiSource fallback stream not found")
+                    notes.append("AnimeDekho episode servers not available")
             except Exception as e:
-                notes.append(f"MultiSource error: {e}")
+                notes.append(f"AnimeDekho error: {e}")
 
         if not stream_url:
             err_details = "; ".join(notes) if notes else "No playable stream found"

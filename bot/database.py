@@ -155,11 +155,12 @@ class Database:
         if quality and quality.lower() not in ("auto", "any", ""):
             q_clean = quality.strip()
             if q_clean.lower() in ("4k", "2160p", "2160"):
+                # V2 #19: strict 4K — only true UHD satisfies a 4K request.
+                # 1080p HQ tiers must NOT satisfy 4K; they trigger fallback instead.
                 q_condition = {
                     "$in": [
-                        "4K", "4k", "2160p", "2160P", "2160",
-                        "1080p HQ", "1080p HQ x265", "1080p 10-Bit", "1080p 10bit",
-                        "1080p x265", "1080p HEVC", "4K (1080p HQ)",
+                        "4K", "4k", "2160p", "2160P", "2160", "UHD",
+                        "4K UHD", "2160p UHD",
                     ]
                 }
             elif q_clean.lower() in ("1080p", "1080"):
@@ -581,73 +582,83 @@ class Database:
                 "language": lang_clean,
                 "updated_at": now,
             }
-            existing = await self.channel_mappings.find_one({"series_slug": series_slug})
-            if existing:
-                update_set = {
-                    f"language_routes.{lang_clean}": route_entry,
-                    "updated_at": now,
-                }
-                if series_title:
-                    update_set["series_title"] = series_title
-                if poster_url:
-                    update_set["poster_url"] = poster_url
-                if existing.get("channel_id") == channel_id or not existing.get("language"):
-                    update_set["language"] = lang_clean
-
+            # V2 #18: atomic upsert — no find_one→insert_one race.
+            # Two concurrent creators can no longer duplicate-insert on
+            # unique series_slug; the second becomes an update instead.
+            try:
                 await self.channel_mappings.update_one(
                     {"series_slug": series_slug},
-                    {"$set": update_set}
+                    {
+                        "$set": {
+                            f"language_routes.{lang_clean}": route_entry,
+                            "updated_at": now,
+                            **({"series_title": series_title} if series_title else {}),
+                            **({"poster_url": poster_url} if poster_url else {}),
+                        },
+                        "$setOnInsert": {
+                            "series_slug": series_slug,
+                            "series_title": series_title or series_slug,
+                            "channel_id": channel_id,
+                            "invite_link": invite_link,
+                            "language": lang_clean,
+                            "auto_created": auto_created,
+                            "created_by": created_by,
+                            "created_at": now,
+                        },
+                    },
+                    upsert=True,
                 )
-            else:
-                new_doc = {
-                    "series_slug": series_slug,
-                    "series_title": series_title or series_slug,
-                    "channel_id": channel_id,
-                    "invite_link": invite_link,
-                    "language": lang_clean,
-                    "language_routes": {lang_clean: route_entry},
-                    "poster_url": poster_url,
-                    "auto_created": auto_created,
-                    "created_by": created_by,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-                await self.channel_mappings.insert_one(new_doc)
+            except Exception as e:
+                # DuplicateKey can still occur on a racing insert; fall back to update.
+                if "duplicate" in str(e).lower() or "E11000" in str(e):
+                    await self.channel_mappings.update_one(
+                        {"series_slug": series_slug},
+                        {"$set": {
+                            f"language_routes.{lang_clean}": route_entry,
+                            "updated_at": now,
+                        }},
+                    )
+                else:
+                    raise
 
             doc = await self.channel_mappings.find_one({"series_slug": series_slug})
             return doc or {}
         else:
-            existing = await self.channel_mappings.find_one({"series_slug": series_slug})
-            if existing:
-                update_set = {
-                    "series_title": series_title or existing.get("series_title") or series_slug,
-                    "channel_id": channel_id,
-                    "invite_link": invite_link,
-                    "auto_created": auto_created,
-                    "created_by": created_by,
-                    "updated_at": now,
-                }
-                if poster_url:
-                    update_set["poster_url"] = poster_url
+            # V2 #18: atomic upsert for the non-language branch as well.
+            try:
                 await self.channel_mappings.update_one(
                     {"series_slug": series_slug},
-                    {"$set": update_set}
+                    {
+                        "$set": {
+                            "series_title": series_title or series_slug,
+                            "channel_id": channel_id,
+                            "invite_link": invite_link,
+                            "auto_created": auto_created,
+                            "created_by": created_by,
+                            "updated_at": now,
+                            **({"poster_url": poster_url} if poster_url else {}),
+                        },
+                        "$setOnInsert": {
+                            "series_slug": series_slug,
+                            "created_at": now,
+                        },
+                    },
+                    upsert=True,
                 )
-                return {**existing, **update_set}
-            else:
-                new_doc = {
-                    "series_slug": series_slug,
-                    "series_title": series_title or series_slug,
-                    "channel_id": channel_id,
-                    "invite_link": invite_link,
-                    "poster_url": poster_url,
-                    "auto_created": auto_created,
-                    "created_by": created_by,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-                await self.channel_mappings.insert_one(new_doc)
-                return new_doc
+            except Exception as e:
+                if "duplicate" in str(e).lower() or "E11000" in str(e):
+                    await self.channel_mappings.update_one(
+                        {"series_slug": series_slug},
+                        {"$set": {
+                            "channel_id": channel_id,
+                            "invite_link": invite_link,
+                            "updated_at": now,
+                        }},
+                    )
+                else:
+                    raise
+            doc = await self.channel_mappings.find_one({"series_slug": series_slug})
+            return doc or {}
 
     async def list_channel_mappings(self) -> list[dict]:
         """List all mapped channels."""
@@ -764,6 +775,54 @@ class Database:
         except Exception as e:
             log.warning("Failed to clear download errors: %s", e)
             return 0
+
+    async def prune_old_data(
+        self,
+        downloads_days: int = 30,
+        errors_days: int = 14,
+        max_downloads: int = 5000,
+    ) -> dict:
+        """Issue #27: Periodic MongoDB storage cleanup.
+
+        Keeps main data (library, files, users, channel_mappings,
+        monitored_series, config) untouched. Only prunes junk:
+        - downloads older than ``downloads_days`` (ISO-string compare works
+          because timestamps are UTC ISO8601) + hard cap ``max_downloads``
+        - download_errors older than ``errors_days`` (200/150 cap stays in
+          log_download_failure as well)
+        Returns {"downloads_deleted": N, "errors_deleted": M}.
+        """
+        from datetime import timedelta
+        stats = {"downloads_deleted": 0, "errors_deleted": 0}
+        try:
+            dl_cutoff = (datetime.now(timezone.utc) - timedelta(days=downloads_days)).isoformat()
+            res = await self.downloads.delete_many({"timestamp": {"$lt": dl_cutoff}})
+            stats["downloads_deleted"] += int(res.deleted_count or 0)
+
+            # Hard cap: keep only the newest max_downloads rows
+            total = await self.downloads.count_documents({})
+            if total > max_downloads:
+                oldest = (
+                    await self.downloads.find()
+                    .sort("timestamp", 1)
+                    .limit(total - max_downloads)
+                    .to_list(length=None)
+                )
+                if oldest:
+                    ids = [d["_id"] for d in oldest]
+                    res2 = await self.downloads.delete_many({"_id": {"$in": ids}})
+                    stats["downloads_deleted"] += int(res2.deleted_count or 0)
+        except Exception as e:
+            log.warning("Downloads prune failed: %s", e)
+        try:
+            err_cutoff = (datetime.now(timezone.utc) - timedelta(days=errors_days)).isoformat()
+            res = await self.download_errors.delete_many({"timestamp": {"$lt": err_cutoff}})
+            stats["errors_deleted"] = int(res.deleted_count or 0)
+        except Exception as e:
+            log.warning("Download-errors prune failed: %s", e)
+        if stats["downloads_deleted"] or stats["errors_deleted"]:
+            log.info("MongoDB prune: %s", stats)
+        return stats
 
     # ── Bot User Network & Broadcasting ────────────────────────────
 

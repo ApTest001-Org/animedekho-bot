@@ -286,18 +286,30 @@ async def _update_progress(
         return
     last_edit[0] = now
     markup = reply_markup
-    if markup is None and job_id:
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Download", callback_data=f"cendl:{job_id}")]])
+    if markup is None and job_id and not download_job_manager.is_job_cancelled(job_id):
+        markup = cancel_markup_for(job_id)
     try:
         await msg.edit_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=markup)
     except Exception:
         pass
 
 
+def cancel_markup_for(job_id: str | None) -> InlineKeyboardMarkup | None:
+    """V2 #21: Build the persistent Cancel button markup for a job.
+
+    Every active download/upload progress edit must include this markup,
+    otherwise Telegram's edit_text() drops the button during upload stage.
+    Terminal states (done/failed/cancelled) must pass None instead.
+    """
+    if not job_id:
+        return None
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Download", callback_data=f"cendl:{job_id}")]])
+
+
 def _get_origin(url: str) -> str:
     domain = urlparse(url).netloc.lower()
     if not domain:
-        return "https://animedekho.app"
+        return "https://animedekho.tv"
     if "megacloud" in domain or "rabbit" in domain or "dokicloud" in domain:
         return "https://megacloud.tv"
     elif "vmeas" in domain or "vidmoly" in domain or "vmbox" in domain or "vmpx" in domain:
@@ -422,8 +434,12 @@ async def n_m3u8dl_re_download(
     save_dir = str(Path(output_path).parent)
     origin = _get_origin(stream_url)
 
-    job_id = job_id or uuid.uuid4().hex[:8]
-    job_temp_dir = _TEMP_BASE / f"re_{stem}_{job_id}"
+    # V2 #2: Never overwrite the caller's job_id — Cancel button mapping
+    # must stay 1:1 with DownloadJobManager. Use the original ID as-is;
+    # only generate a fresh one (same [:10] length as the manager) when
+    # the caller did not supply one.
+    effective_job_id = job_id if job_id else uuid.uuid4().hex[:10]
+    job_temp_dir = _TEMP_BASE / f"re_{stem}_{effective_job_id}"
     job_temp_dir.mkdir(parents=True, exist_ok=True)
 
     clean_q = str(quality).strip().lower()
@@ -483,9 +499,9 @@ async def n_m3u8dl_re_download(
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        download_job_manager.attach_process(job_id, proc)
-        download_job_manager.attach_temp_file(job_id, output_path)
-        download_job_manager.attach_temp_file(job_id, str(job_temp_dir))
+        download_job_manager.attach_process(effective_job_id, proc)
+        download_job_manager.attach_temp_file(effective_job_id, output_path)
+        download_job_manager.attach_temp_file(effective_job_id, str(job_temp_dir))
 
         last_edit = [0.0]
         start_time = time.time()
@@ -497,7 +513,7 @@ async def n_m3u8dl_re_download(
             last_time = time.time()
             last_change_time = time.time()
             while proc.returncode is None:
-                if download_job_manager.is_job_cancelled(job_id):
+                if download_job_manager.is_job_cancelled(effective_job_id):
                     try:
                         proc.kill()
                     except Exception:
@@ -545,7 +561,7 @@ async def n_m3u8dl_re_download(
                             _download_progress_text(title, quality, pct, total, elapsed, speed) + stall_info,
                             last_edit,
                             interval=3.0,
-                            job_id=job_id,
+                            job_id=effective_job_id,
                         )
                 except Exception:
                     pass
@@ -1110,15 +1126,34 @@ async def _build_episode_caption_and_markup(
         ep_num = 1
 
     # Fetch AniList metadata for genres, status, total episodes
+    # V2 #5: only use AniList when it confidently matches this anime.
+    # get_anilist_metadata does fuzzy search — a wrong match would post
+    # wrong status/episode-count/genres, so verify title overlap first.
     meta = None
     try:
         from utils.anilist import get_anilist_metadata
-        meta = await get_anilist_metadata(s_title)
+        cand = await get_anilist_metadata(s_title)
+        if cand:
+            meta_title = str(cand.get("title") or cand.get("name") or "")
+            q_toks = set(re.sub(r"[^a-z0-9 ]", " ", s_title.lower()).split()) - {"the", "a", "an"}
+            m_toks = set(re.sub(r"[^a-z0-9 ]", " ", meta_title.lower()).split()) - {"the", "a", "an"}
+            if q_toks and m_toks and (q_toks & m_toks):
+                meta = cand
+            else:
+                log.debug("AniList match rejected for '%s' (got '%s')", s_title, meta_title)
     except Exception:
         pass
 
     status = meta.get("status") if meta else None
     total_eps = meta.get("episodes") if meta else None
+    # V2 #5: sanity-filter AniList numbers — absurd counts are wrong matches.
+    if total_eps is not None:
+        try:
+            total_eps = int(total_eps)
+            if total_eps <= 0 or total_eps > 3000:
+                total_eps = None
+        except Exception:
+            total_eps = None
     raw_genres = (meta.get("genres") if meta else None) or []
 
     formatted_genres = []
@@ -1128,14 +1163,20 @@ async def _build_episode_caption_and_markup(
         formatted_genres.append(f"{emoji} #{clean_tag}")
     genres_str = ", ".join(formatted_genres)
 
+    # V2 #5: never hardcode audio. Explicit language param wins; title/slug
+    # hints are next; otherwise omit the line instead of guessing "Multi Audio".
+    audio_str = ""
     if language:
         audio_str = language if ("dub" in language.lower() or "sub" in language.lower()) else f"{language.title()} Dub"
-    elif "hindi" in (s_title + " " + (series_slug or "")).lower():
-        audio_str = "Hindi Dub"
-    elif meta and meta.get("audio"):
-        audio_str = meta["audio"]
     else:
-        audio_str = "Multi Audio"
+        blob = f"{s_title} {series_slug or ''}".lower()
+        found_langs = [L for L in ("hindi", "tamil", "telugu", "english", "japanese") if L in blob]
+        if len(found_langs) == 1:
+            audio_str = f"{found_langs[0].title()} Dub"
+        elif len(found_langs) > 1:
+            audio_str = "Multi Audio"
+        elif meta and meta.get("audio"):
+            audio_str = meta["audio"]
 
     bot_me = getattr(client, "me", None)
     bname = bot_me.username if bot_me and bot_me.username else "animedekho"
@@ -1144,8 +1185,9 @@ async def _build_episode_caption_and_markup(
         f"✦ <b>{htmlmod.escape(s_title)}</b> ✦",
         f"Season {season_num:02d} • Episode {ep_num:02d}",
         "━━━━━━━━━━━━━━━━━━",
-        f"⬡ <b>Audio:</b> {audio_str}",
     ]
+    if audio_str:
+        caption_lines.append(f"⬡ <b>Audio:</b> {audio_str}")
     if status:
         caption_lines.append(f"⬡ <b>Status:</b> {status}")
     if total_eps:
@@ -1516,7 +1558,8 @@ async def download_and_upload(
             f"├ 🎬 Quality: {quality}\n"
             f"├ 💾 Size: {_format_size(file_size)}\n"
             f"└ 🔄 Starting upload...",
-            parse_mode=enums.ParseMode.HTML)
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=cancel_markup_for(job_id))
 
         # Dump / Storage Channel and Upload Mode
         from bot.database import db
@@ -1540,7 +1583,8 @@ async def download_and_upload(
                     f"├ 🎬 Quality: {quality} ({upload_mode.upper()})\n"
                     f"├ 💾 Size: {_format_size(file_size)}\n"
                     f"└ 🔄 Storing media in cache...",
-                    parse_mode=enums.ParseMode.HTML)
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=cancel_markup_for(job_id))
                 if upload_mode == "document":
                     dump_msg = await client.send_document(
                         chat_id=dump_channel_id,
@@ -1800,16 +1844,33 @@ async def download_and_upload(
 
 def cleanup_vps_temp_files(max_age_seconds: int = 1800) -> int:
     """
-    Clean up orphaned temporary files and directories from VPS storage (Issue #9).
+    Clean up orphaned temporary files and directories from VPS storage (Issue #9, V2 #1).
     Removes downloaded media, partial chunks, and generated thumbnails older than max_age_seconds.
+    V2 #1: never deletes files belonging to actively running download jobs.
     Returns the count of cleaned items.
     """
     now = time.time()
     cleaned_count = 0
+    # V2 #1: collect in-use paths from active jobs so the sweeper can't
+    # delete a file whose mtime merely looks stale mid-download.
+    active_paths: set[str] = set()
+    try:
+        for job in list(download_job_manager._jobs.values()):
+            active_paths.update(job.temp_files)
+    except Exception:
+        pass
     try:
         if _TEMP_BASE.exists():
             for item in _TEMP_BASE.iterdir():
                 try:
+                    resolved = str(item.resolve())
+                    if resolved in active_paths or str(item) in active_paths:
+                        continue
+                    # Also skip any re_* job temp dirs still tracked
+                    if item.is_dir() and item.name.startswith("re_"):
+                        dir_str = str(item)
+                        if any(dir_str in p or p.startswith(dir_str) for p in active_paths):
+                            continue
                     mtime = item.stat().st_mtime
                     if now - mtime > max_age_seconds:
                         if item.is_file() or item.is_symlink():

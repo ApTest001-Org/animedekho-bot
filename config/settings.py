@@ -6,13 +6,17 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class SiteConfig:
-    base_url: str = "https://animedekho.app"
-    ajax_url: str = "https://animedekho.app/wp-admin/admin-ajax.php"
+    # Issue #27 / V2 #7: site moved from animedekho.app → animedekho.tv
+    # (app now 301-redirects to tv; direct .tv avoids a hop + stale cert path).
+    base_url: str = "https://animedekho.tv"
+    ajax_url: str = "https://animedekho.tv/wp-admin/admin-ajax.php"
     series_path: str = "/series-hindi"
     movies_path: str = "/movie-hindi"
     episode_path: str = "/epi"
-    embed_pattern: str = "https://animedekho.app/?trdekho={server}&trid={post_id}&trtype=2"
-    category_api: str = "https://animedekho.app/wp-json/wp/v2/categories"
+    embed_pattern: str = "https://animedekho.tv/?trdekho={server}&trid={post_id}&trtype=2"
+    category_api: str = "https://animedekho.tv/wp-json/wp/v2/categories"
+    # Legacy domain kept as fallback when .tv returns 403/404 (V2 #7-#10).
+    fallback_base_url: str = "https://animedekho.app"
     user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"

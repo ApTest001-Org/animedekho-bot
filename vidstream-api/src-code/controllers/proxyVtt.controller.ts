@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { isValidProxyUrl } from "../utils/security";
+import { isValidProxyUrl, isValidFinalUrl } from "../utils/security";
 
 // GET /proxy/vtt?url=string
 export default async function (req: Request, res: Response) {
@@ -35,6 +35,16 @@ export default async function (req: Request, res: Response) {
     });
 
     console.log(`[HLS PROXY] [VTT] [${response.status}]: ${Url.host}`);
+
+    // V2 #22: redirect-chain re-validation for subtitles as well.
+    try {
+        const finalUrl = (response as any).url || url;
+        if (finalUrl && finalUrl !== url && !isValidFinalUrl(finalUrl)) {
+            console.log(`[HLS PROXY] [BLOCKED REDIRECT]: ${url} -> ${finalUrl}`);
+            res.status(403).send('Forbidden: redirect target not allowlisted');
+            return;
+        }
+    } catch {}
 
 	const safeHeaders = ['content-type', 'access-control-allow-origin', 'cache-control', 'expires'];
     for (const [key, value] of response.headers.entries()) {

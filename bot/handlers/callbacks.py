@@ -10,7 +10,7 @@ from bot.telegram import Client, enums
 from bot.telegram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 from api.client import api
-from api.models import Quality
+from api.models import Quality, VideoServer
 from bot import keyboards as kb
 from bot.auth import require_approved
 import bot.logger
@@ -209,19 +209,34 @@ async def _handle_movies_listing(q: CallbackQuery, page: int):
 
 
 async def _handle_series_detail(client: Client, q: CallbackQuery, slug: str):
+    # V2 #11-#13: preserve selected-source context. If this slug came from a
+    # fallback provider (registry hit), route straight to that provider's
+    # series instead of forcing AnimeDekho first (which caused wrong routing).
+    from extractors.multisource import multi_source_manager
+    reg_source = multi_source_manager.get_source_for_slug(slug)
     series = None
-    try:
-        series = await api.get_series(slug)
-    except Exception as e:
-        log.warning("api.get_series failed for '%s' (%s), trying multi_source_manager...", slug, e)
-        from extractors.multisource import multi_source_manager
-        series = await multi_source_manager.get_fallback_series(slug)
+    if reg_source and reg_source != "AnimeDekho":
+        try:
+            log.info("Source-context hit: slug '%s' belongs to %s, using fallback series directly", slug, reg_source)
+            series = await multi_source_manager.get_fallback_series(slug)
+        except Exception as e:
+            log.warning("Fallback series failed for '%s' (%s), trying AnimeDekho...", slug, e)
+            series = None
+    if series is None:
+        try:
+            series = await api.get_series(slug)
+        except Exception as e:
+            log.warning("api.get_series failed for '%s' (%s), trying multi_source_manager...", slug, e)
+            series = await multi_source_manager.get_fallback_series(slug)
 
     if not series:
         await _send_text(q, "⚠️ Could not load series details. Please try another anime.")
         return
 
-    text = f"📺 <b>{esc(series.title)}</b>\n\n"
+    # V2 #12: admin/user DM always shows which website/source this came from.
+    src_tag = getattr(series, "source", "") or reg_source or "AnimeDekho"
+    text = f"📺 <b>{esc(series.title)}</b>\n"
+    text += f"🔗 <i>Source: {esc(src_tag)}</i>\n\n"
     if series.genres:
         text += f"🏷 {', '.join(series.genres[:6])}\n"
     if series.description:
@@ -428,120 +443,173 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
     if download_job_manager.is_job_cancelled(job_id):
         return
 
-    # Lazy resolve: prioritize servers matching requested quality
-    resolved = await _lazy_resolve_servers(raw_servers, quality_pref) if raw_servers else []
-    if resolved:
-        _store_servers(chat_id, ep_slug, resolved, title)
-
-    candidates = _find_quality_candidates(resolved or raw_servers, quality_pref) if (resolved or raw_servers) else []
-
-    # Check if exact quality or 4K found on AnimeDekho
-    has_exact = any(q.resolution.lower() == quality_pref.lower() for _, q in candidates)
+    # V2 #15 CRITICAL: direct-file sources FIRST, AnimeDekho LAST.
+    # Required order: AnimeDubHindi/ToonWorld4All/RareAnimes/DeadToons/TOONo/
+    # ToonAnime (via MultiSource) → AnimeDrive → ToonFlix → AnimeDekho.
+    # Old code resolved AnimeDekho first; now MultiSource is Step 1.
+    candidates: list[tuple[VideoServer, Quality]] = []
+    has_exact = False
     is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
+    found_match = False
+    # V2 #14: rich diagnostics for the failure card.
+    diag_steps: list[str] = []
 
     def _is_4k_satisfying(q_str: str) -> bool:
         q = q_str.lower()
         return any(k in q for k in ("4k", "2160", "uhd"))
 
-    # Multi-source fallback if AnimeDekho has no servers, lacks requested quality, or user requested 4K
-    if not candidates or not has_exact or is_4k:
-        found_match = False
-
-        # Step 1: Primary File Sources via Multi-Source Scrapers (RareAnimes, ToonWorld4All, DeadToons, TOONo)
-        try:
-            from extractors.multisource import multi_source_manager
-            log.info("Checking multi-source manager for '%s' S%dE%d [%s]", series_title, season, ep_num, quality_pref)
-            ms_res = await multi_source_manager.resolve_episode_stream(
-                series_title=series_title,
-                season=season,
-                episode=ep_num,
-                quality_pref=quality_pref,
-                series_slug=series_slug,
+    # Step 1 FIRST: direct-file sources via Multi-Source manager.
+    try:
+        from extractors.multisource import multi_source_manager
+        # V2 #13: keep the user's selected-button source first.
+        preferred_src = multi_source_manager.get_source_for_slug(series_slug) if series_slug else None
+        log.info("V2#15: trying direct sources first for '%s' S%dE%d [%s] (preferred=%s)", series_title, season, ep_num, quality_pref, preferred_src)
+        ms_res = await multi_source_manager.resolve_episode_stream(
+            series_title=series_title,
+            season=season,
+            episode=ep_num,
+            quality_pref=quality_pref,
+            series_slug=series_slug,
+            preferred_source=preferred_src,
+        )
+        if ms_res and ms_res.get("url"):
+            ms_q = ms_res.get("quality", quality_pref).lower()
+            ms_srv = VideoServer(
+                name=ms_res.get("source", "MultiSource"),
+                server_id=0,
+                player_url=ms_res["url"],
+                qualities=[Quality(resolution=ms_res.get("quality", quality_pref), url=ms_res["url"])],
             )
-            if ms_res and ms_res.get("url"):
-                ms_q = ms_res.get("quality", quality_pref).lower()
-                ms_srv = VideoServer(
-                    name=ms_res.get("source", "MultiSource"),
-                    player_url=ms_res["url"],
-                    is_resolved=True,
-                    qualities=[Quality(resolution=ms_res.get("quality", quality_pref), url=ms_res["url"])],
+            if series_slug and not _poster_cache.get(series_slug) and ms_res.get("poster"):
+                from utils.anilist import resolve_best_poster
+                res_p = await resolve_best_poster(series_title, ms_res.get("poster"))
+                if res_p:
+                    _poster_cache[series_slug] = res_p
+            if (is_4k and _is_4k_satisfying(ms_q)) or (not is_4k and ms_q == quality_pref.lower()):
+                candidates.insert(0, (ms_srv, ms_srv.qualities[0]))
+                has_exact = True
+                found_match = True
+                log.info("%s provided exact/4K stream [%s] for '%s' S%dE%d", ms_res.get("source"), ms_res.get("quality"), series_title, season, ep_num)
+                diag_steps.append(f"{ms_res.get('source')}: exact {ms_res.get('quality')} ✓")
+            else:
+                candidates.append((ms_srv, ms_srv.qualities[0]))
+                diag_steps.append(f"{ms_res.get('source')}: {ms_res.get('quality')} (non-exact)")
+        else:
+            diag_steps.append("MultiSource: no result")
+    except Exception as e:
+        log.warning("Multi-source manager resolution error: %s", e)
+        diag_steps.append(f"MultiSource: error {str(e)[:80]}")
+
+    # Step 2: AnimeDekho as FALLBACK (not primary). Only resolve when direct
+    # sources missed, lack exact quality, or 4K still needs a true-UHD hit.
+    if not candidates or not has_exact or (is_4k and not found_match):
+        try:
+            resolved = await _lazy_resolve_servers(raw_servers, quality_pref) if raw_servers else []
+            if resolved:
+                _store_servers(chat_id, ep_slug, resolved, title)
+            ad_cands = _find_quality_candidates(resolved or raw_servers, quality_pref) if (resolved or raw_servers) else []
+            if ad_cands:
+                ad_has_exact = any(q.resolution.lower() == quality_pref.lower() for _, q in ad_cands)
+                if ad_has_exact and not has_exact:
+                    # No direct exact yet — AnimeDekho exact becomes primary.
+                    candidates = ad_cands + candidates
+                    has_exact = True
+                    diag_steps.append(f"AnimeDekho: exact {quality_pref} ✓")
+                else:
+                    # Direct exact already leads — AnimeDekho stays behind it.
+                    candidates.extend(ad_cands)
+                    if not has_exact:
+                        has_exact = any(q.resolution.lower() == quality_pref.lower() for _, q in candidates)
+                    diag_steps.append(f"AnimeDekho: {len(ad_cands)} candidate(s)")
+            else:
+                diag_steps.append("AnimeDekho: no candidates" if raw_servers else "AnimeDekho: no servers (403/empty)")
+        except Exception as e:
+            log.warning("AnimeDekho fallback resolution error: %s", e)
+            diag_steps.append(f"AnimeDekho: error {str(e)[:80]}")
+
+    # Step 3: AnimeDrive — skip when MultiSource already delivered that provider.
+    if (not candidates or not has_exact or (is_4k and not found_match)) and not any(
+        "animedrive" in (s.name or "").lower() for s, _ in candidates
+    ):
+        try:
+            from extractors.animedrive import animedrive
+            log.info("Checking AnimeDrive fallback for '%s' S%dE%d [%s]", series_title, season, ep_num, quality_pref)
+            ad_res = await animedrive.resolve_episode(series_title, season=season, episode=ep_num, quality_pref=quality_pref)
+            if ad_res and ad_res.get("url"):
+                ad_q = ad_res.get("quality", "").lower()
+                ad_srv = VideoServer(
+                    name="AnimeDrive",
+                    server_id=0,
+                    player_url=ad_res["url"],
+                    qualities=[Quality(resolution=ad_res["quality"], url=ad_res["url"])],
                 )
-                if series_slug and not _poster_cache.get(series_slug) and ms_res.get("poster"):
+                if series_slug and not _poster_cache.get(series_slug):
                     from utils.anilist import resolve_best_poster
-                    res_p = await resolve_best_poster(series_title, ms_res.get("poster"))
+                    res_p = await resolve_best_poster(series_title, ad_res.get("poster"))
                     if res_p:
                         _poster_cache[series_slug] = res_p
-                if (is_4k and _is_4k_satisfying(ms_q)) or (not is_4k and ms_q == quality_pref.lower()):
-                    candidates.insert(0, (ms_srv, ms_srv.qualities[0]))
+                if ((is_4k and _is_4k_satisfying(ad_q)) or (not is_4k and ad_q == quality_pref.lower())) and not has_exact:
+                    candidates.insert(0, (ad_srv, ad_srv.qualities[0]))
                     has_exact = True
                     found_match = True
-                    log.info("%s provided exact/4K stream [%s] for '%s' S%dE%d", ms_res.get("source"), ms_res.get("quality"), series_title, season, ep_num)
+                    log.info("AnimeDrive provided exact/4K stream [%s] for '%s' S%dE%d", ad_res["quality"], series_title, season, ep_num)
+                    diag_steps.append(f"AnimeDrive: exact {ad_res.get('quality')} ✓")
                 else:
-                    candidates.append((ms_srv, ms_srv.qualities[0]))
+                    candidates.append((ad_srv, ad_srv.qualities[0]))
+                    diag_steps.append(f"AnimeDrive: {ad_res.get('quality')} (appended)")
+            else:
+                diag_steps.append("AnimeDrive: no result")
         except Exception as e:
-            log.warning("Multi-source manager resolution error: %s", e)
+            log.warning("AnimeDrive resolution error: %s", e)
+            diag_steps.append(f"AnimeDrive: error {str(e)[:80]}")
 
-        # Step 2: Fallback - AnimeDrive
-        if not candidates or not has_exact or (is_4k and not found_match):
-            try:
-                from extractors.animedrive import animedrive
-                log.info("Checking AnimeDrive fallback for '%s' S%dE%d [%s]", series_title, season, ep_num, quality_pref)
-                ad_res = await animedrive.resolve_episode(series_title, season=season, episode=ep_num, quality_pref=quality_pref)
-                if ad_res and ad_res.get("url"):
-                    ad_q = ad_res.get("quality", "").lower()
-                    ad_srv = VideoServer(
-                        name="AnimeDrive",
-                        player_url=ad_res["url"],
-                        is_resolved=True,
-                        qualities=[Quality(resolution=ad_res["quality"], url=ad_res["url"])],
-                    )
-                    if series_slug and not _poster_cache.get(series_slug):
-                        from utils.anilist import resolve_best_poster
-                        res_p = await resolve_best_poster(series_title, ad_res.get("poster"))
-                        if res_p:
-                            _poster_cache[series_slug] = res_p
-                    if (is_4k and _is_4k_satisfying(ad_q)) or (not is_4k and ad_q == quality_pref.lower()):
-                        candidates.insert(0, (ad_srv, ad_srv.qualities[0]))
-                        has_exact = True
-                        found_match = True
-                        log.info("AnimeDrive provided exact/4K stream [%s] for '%s' S%dE%d", ad_res["quality"], series_title, season, ep_num)
-                    else:
-                        candidates.append((ad_srv, ad_srv.qualities[0]))
-            except Exception as e:
-                log.warning("AnimeDrive resolution error: %s", e)
-
-        # Step 3: Fallback - ToonFlix
-        if not candidates or not has_exact or (is_4k and not found_match):
-            try:
-                from extractors.toonflix import toonflix
-                log.info("Checking ToonFlix fallback for '%s' S%dE%d [%s]", series_title, season, ep_num, quality_pref)
-                tf_res = await toonflix.resolve_episode(series_title, season=season, episode=ep_num, quality_pref=quality_pref)
-                if tf_res and tf_res.get("url"):
-                    if series_slug and not _poster_cache.get(series_slug):
-                        from utils.anilist import resolve_best_poster
-                        res_p = await resolve_best_poster(series_title, tf_res.get("poster"))
-                        if res_p:
-                            _poster_cache[series_slug] = res_p
-                    tf_q = tf_res.get("quality", "").lower()
-                    tf_srv = VideoServer(
-                        name="ToonFlix",
-                        player_url=tf_res["url"],
-                        is_resolved=True,
-                        qualities=[Quality(resolution=tf_res["quality"], url=tf_res["url"])],
-                    )
-                    if (is_4k and _is_4k_satisfying(tf_q)) or (not is_4k and tf_q == quality_pref.lower()):
-                        candidates.insert(0, (tf_srv, tf_srv.qualities[0]))
-                        has_exact = True
-                        found_match = True
-                        log.info("ToonFlix provided exact/4K %s stream candidate", tf_res["quality"])
-                    else:
-                        candidates.append((tf_srv, tf_srv.qualities[0]))
-            except Exception as e:
-                log.warning("ToonFlix resolution error: %s", e)
+    # Step 4: ToonFlix — same direct-first respect.
+    if (not candidates or not has_exact or (is_4k and not found_match)) and not any(
+        "toonflix" in (s.name or "").lower() for s, _ in candidates
+    ):
+        try:
+            from extractors.toonflix import toonflix
+            log.info("Checking ToonFlix fallback for '%s' S%dE%d [%s]", series_title, season, ep_num, quality_pref)
+            tf_res = await toonflix.resolve_episode(series_title, season=season, episode=ep_num, quality_pref=quality_pref)
+            if tf_res and tf_res.get("url"):
+                if series_slug and not _poster_cache.get(series_slug):
+                    from utils.anilist import resolve_best_poster
+                    res_p = await resolve_best_poster(series_title, tf_res.get("poster"))
+                    if res_p:
+                        _poster_cache[series_slug] = res_p
+                tf_q = tf_res.get("quality", "").lower()
+                tf_srv = VideoServer(
+                    name="ToonFlix",
+                    server_id=0,
+                    player_url=tf_res["url"],
+                    qualities=[Quality(resolution=tf_res["quality"], url=tf_res["url"])],
+                )
+                if ((is_4k and _is_4k_satisfying(tf_q)) or (not is_4k and tf_q == quality_pref.lower())) and not has_exact:
+                    candidates.insert(0, (tf_srv, tf_srv.qualities[0]))
+                    has_exact = True
+                    found_match = True
+                    log.info("ToonFlix provided exact/4K %s stream candidate", tf_res["quality"])
+                    diag_steps.append(f"ToonFlix: exact {tf_res.get('quality')} ✓")
+                else:
+                    candidates.append((tf_srv, tf_srv.qualities[0]))
+                    diag_steps.append(f"ToonFlix: {tf_res.get('quality')} (appended)")
+            else:
+                diag_steps.append("ToonFlix: no result")
+        except Exception as e:
+            log.warning("ToonFlix resolution error: %s", e)
+            diag_steps.append(f"ToonFlix: error {str(e)[:80]}")
 
     if not candidates:
         if not download_job_manager.is_job_cancelled(job_id):
-            await progress_msg.edit_text("⚠️ No downloadable URL found on any server.")
+            # V2 #14: detailed diagnostic instead of generic failure.
+            diag_txt = " • ".join(diag_steps) if diag_steps else "no sources attempted"
+            await progress_msg.edit_text(
+                f"⚠️ <b>No downloadable URL found.</b>\n"
+                f"┌ 📺 {esc(title)} [{esc(quality_pref)}]\n"
+                f"├ 🔍 Stages: {esc(diag_txt[:400])}\n"
+                f"└ 💡 Try another quality/episode or /bypass the source URL.",
+                parse_mode=enums.ParseMode.HTML,
+            )
         download_job_manager.remove_job(job_id)
         return
 
@@ -688,10 +756,9 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
 
     candidates = _find_quality_candidates(resolved or raw_servers, quality_pref)
 
-    # Quality fallback logic for movies:
-    # If user wants 4K: AnimeDekho lacks 4K -> AnimeDrive is default for 4K.
-    # If AnimeDrive does NOT have 4K -> switch to ToonFlix (which also has 4K).
-    # If user wants another quality (e.g. 1080p) and AnimeDekho lacks it -> switch to AnimeDrive, then ToonFlix.
+    # Quality fallback logic for movies (V2 #15: direct first, AnimeDekho last):
+    # Direct-file MultiSource → AnimeDrive (DEFAULT for 4K) → ToonFlix.
+    # AnimeDekho candidates above are the fallback tier, not primary.
     has_exact = any(q.resolution.lower() == quality_pref.lower() for _, q in candidates)
     is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
 
@@ -699,8 +766,44 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
         q = q_str.lower()
         return any(k in q for k in ("4k", "2160", "uhd"))
 
+    # Step 0 FIRST (movies had no direct-source step at all): MultiSource.
+    try:
+        from extractors.multisource import multi_source_manager
+        from extractors.multisource import multi_source_manager as _msm
+        _pref = _msm.get_source_for_slug(movie_slug)
+        log.info("V2#15 movies: trying direct sources first for '%s' [%s] (preferred=%s)", title, quality_pref, _pref)
+        ms_res = await multi_source_manager.resolve_episode_stream(
+            series_title=title, season=1, episode=1,
+            quality_pref=quality_pref, series_slug=movie_slug,
+            preferred_source=_pref,
+        )
+        if ms_res and ms_res.get("url"):
+            ms_q = ms_res.get("quality", quality_pref).lower()
+            ms_srv = VideoServer(
+                name=ms_res.get("source", "MultiSource"),
+                server_id=0,
+                player_url=ms_res["url"],
+                qualities=[Quality(resolution=ms_res.get("quality", quality_pref), url=ms_res["url"])],
+            )
+            if not poster_url and ms_res.get("poster"):
+                from utils.anilist import resolve_best_poster
+                res_p = await resolve_best_poster(title, ms_res.get("poster"))
+                if res_p:
+                    poster_url = res_p
+                    _poster_cache[movie_slug] = poster_url
+            if (is_4k and _is_4k_satisfying(ms_q)) or (not is_4k and ms_q == quality_pref.lower()):
+                # Direct exact outranks AnimeDekho fallback exact (direct-first).
+                candidates.insert(0, (ms_srv, ms_srv.qualities[0]))
+                has_exact = True
+            else:
+                candidates.append((ms_srv, ms_srv.qualities[0]))
+    except Exception as e:
+        log.warning("MultiSource movie resolution error: %s", e)
+
     if not has_exact or is_4k:
-        found_4k = False
+        found_4k = any(
+            _is_4k_satisfying(q.resolution) for _, q in candidates
+        ) if is_4k else False
 
         # Step 1: Secondary - AnimeDrive (DEFAULT for 4K)
         try:
@@ -717,8 +820,8 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
                 ad_q = ad_res.get("quality", "").lower()
                 ad_srv = VideoServer(
                     name="AnimeDrive",
+                    server_id=0,
                     player_url=ad_res["url"],
-                    is_resolved=True,
                     qualities=[Quality(resolution=ad_res["quality"], url=ad_res["url"])],
                 )
                 if is_4k and _is_4k_satisfying(ad_q):
@@ -752,8 +855,8 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
                     tf_q = tf_res.get("quality", "").lower()
                     tf_srv = VideoServer(
                         name="ToonFlix",
+                        server_id=0,
                         player_url=tf_res["url"],
-                        is_resolved=True,
                         qualities=[Quality(resolution=tf_res["quality"], url=tf_res["url"])],
                     )
                     if (is_4k and _is_4k_satisfying(tf_q)) or (not is_4k and tf_q == quality_pref.lower()):
@@ -1039,27 +1142,58 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                             if success:
                                 break
             else:
-                # Standard resolution: AnimeDekho first -> AnimeDrive -> ToonFlix
-                episode_data = await api.get_episode(ep.slug)
-                resolved = await _lazy_resolve_servers(episode_data.servers, quality_pref)
-                candidates = _find_quality_candidates(resolved or [], quality_pref) if resolved else []
-
-                if candidates:
-                    chosen_q = candidates[0][1]
-                    filename = make_episode_filename(series.title, season, ep.number, chosen_q.resolution)
-                    for attempt, (srv, quality) in enumerate(candidates, 1):
-                        chosen_q = quality
+                # V2 #15 standard batch: direct MultiSource FIRST → AnimeDekho
+                # fallback → AnimeDrive → ToonFlix (was AnimeDekho-first).
+                # Fallback 0: direct-file MultiSource Manager first.
+                try:
+                    from extractors.multisource import multi_source_manager
+                    ms0 = await multi_source_manager.resolve_episode_stream(
+                        series_title=series.title,
+                        season=season,
+                        episode=ep.number,
+                        quality_pref=quality_pref,
+                        series_slug=series.slug,
+                    )
+                    if ms0 and ms0.get("url"):
+                        chosen_q = Quality(resolution=ms0.get("quality", quality_pref), url=ms0["url"])
+                        filename = make_episode_filename(series.title, season, ep.number, chosen_q.resolution)
                         success, sent_msg = await download_and_upload(
-                            chat_id, quality.master_url or quality.url, quality.resolution, filename,
+                            chat_id, ms0["url"], chosen_q.resolution,
+                            filename,
                             f"{series.title} S{season}E{ep.number}",
-                            ep_msg, client, variant_url=quality.url,
-                            poster_url=series.poster or "",
+                            ep_msg, client,
+                            poster_url=series.poster or ms0.get("poster", ""),
                             destination_channel_id=dest_channel_id,
+                            series_slug=series.slug,
                         )
-                        if success:
-                            break
+                except Exception as e:
+                    log.warning("Batch Multi-Source first-try failed for ep %s: %s", ep.slug, e)
 
-                # Fallback 1: Secondary - AnimeDrive
+                # Fallback 1: AnimeDekho (now fallback, not primary)
+                if not success:
+                    try:
+                        episode_data = await api.get_episode(ep.slug)
+                        resolved = await _lazy_resolve_servers(episode_data.servers, quality_pref)
+                        candidates = _find_quality_candidates(resolved or [], quality_pref) if resolved else []
+
+                        if candidates:
+                            chosen_q = candidates[0][1]
+                            filename = make_episode_filename(series.title, season, ep.number, chosen_q.resolution)
+                            for attempt, (srv, quality) in enumerate(candidates, 1):
+                                chosen_q = quality
+                                success, sent_msg = await download_and_upload(
+                                    chat_id, quality.master_url or quality.url, quality.resolution, filename,
+                                    f"{series.title} S{season}E{ep.number}",
+                                    ep_msg, client, variant_url=quality.url,
+                                    poster_url=series.poster or "",
+                                    destination_channel_id=dest_channel_id,
+                                )
+                                if success:
+                                    break
+                    except Exception as e:
+                        log.warning("Batch AnimeDekho fallback failed for ep %s: %s", ep.slug, e)
+
+                # Fallback 2: Secondary - AnimeDrive
                 if not success:
                     try:
                         from extractors.animedrive import animedrive
@@ -1465,11 +1599,25 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                 await bot.logger.bot_logger.log_download_error(title, "Download/upload failed on all servers")
             try:
                 attempted_txt = ", ".join(dict.fromkeys(attempted_sources)) if attempted_sources else "all available servers"
+                # V2 #14: report source, quality, resolved-link count and stage —
+                # not just a generic failure.
+                req_q = getattr(chosen_quality, "resolution", "?")
+                n_cands = len(candidates) if "candidates" in dir() else 0
+                try:
+                    from bot.database import db as _db
+                    _errs = await _db.get_recent_download_errors(limit=1) if _db else []
+                    last_stage = (_errs[0].get("error", "") if _errs else "")[:160]
+                except Exception:
+                    last_stage = ""
+                detail = f"├ 🎬 Requested: {esc(str(req_q))} · Candidates: {n_cands}\n"
+                if last_stage:
+                    detail += f"├ 🧩 Last stage: {esc(last_stage)}\n"
                 await progress_msg.edit_text(
                     f"❌ <b>Download Failed</b>\n"
                     f"┌ 📺 {esc(title)}\n"
                     f"├ 🔍 Attempted: {esc(attempted_txt)}\n"
-                    f"└ 💔 Stream currently unavailable on attempted sources. Please try another quality or episode.",
+                    f"{detail}"
+                    f"└ 💔 Stream unavailable on attempted sources. Try another quality/episode or /bypass the source URL.",
                     parse_mode=enums.ParseMode.HTML,
                 )
             except Exception:
@@ -1519,9 +1667,13 @@ async def _handle_category(q: CallbackQuery, cat_slug: str, page: int):
 
 
 def _sort_qualities(qualities: set[str]) -> list[str]:
-    """Sort quality strings like 360p, 480p, 720p, 1080p."""
-    order = {"360p": 1, "480p": 2, "720p": 3, "1080p": 4, "auto": 5}
-    return sorted(qualities, key=lambda q: order.get(q, 99))
+    """Sort quality strings like 360p, 480p, 720p, 1080p, 4K (V2 #20)."""
+    order = {
+        "360p": 1, "480p": 2, "720p": 3, "1080p": 4,
+        "1080p hq": 5, "4k": 6, "2160p": 6, "2160": 6, "uhd": 6,
+        "auto": 7,
+    }
+    return sorted(qualities, key=lambda q: order.get(str(q).lower(), 99))
 
 
 async def _lazy_resolve_servers(servers: list, quality_pref: str = "") -> list:
@@ -1657,38 +1809,24 @@ def _find_quality_candidates(servers: list, quality_pref: str) -> list[tuple[Vid
     is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
 
     if is_4k:
-        # Score and rank all available server qualities for 4K tier
-        # True 4K (2160p) > 1080p HQ x265 / 10-bit > 1080p HQ > 1080p > 720p...
-        def _score_for_4k(res: str) -> int:
+        # V2 #19: 4K requests must ONLY return true 4K/2160/UHD streams.
+        # Never fall back to 1080p/720p here — return [] so the caller
+        # triggers AnimeDrive/ToonFlix/MultiSource 4K fallback instead.
+        def _is_true_4k(res: str) -> bool:
             r = res.lower()
-            if any(k in r for k in ("4k", "2160", "uhd")):
-                return 1000
-            if "1080" in r and "hq" in r and any(k in r for k in ("x265", "hevc", "10bit", "10-bit", "10 bit")):
-                return 950
-            if "1080" in r and "hq" in r:
-                return 900
-            if "1080" in r and any(k in r for k in ("10bit", "10-bit", "10 bit", "x265", "hevc", "bluray", "remux")):
-                return 850
-            if "1080" in r:
-                return 800
-            if "720" in r and any(k in r for k in ("hq", "10bit", "10-bit", "x265")):
-                return 600
-            if "720" in r:
-                return 500
-            if "480" in r:
-                return 300
-            return 100
+            return any(k in r for k in ("4k", "2160", "uhd"))
 
-        scored_pairs = []
+        true_4k_pairs = []
         for srv in sorted_servers:
             for q in srv.qualities:
-                scored_pairs.append((_score_for_4k(q.resolution), _server_priority(srv), srv, q))
-            if not srv.qualities and srv.direct_url:
-                scored_pairs.append((100, _server_priority(srv), srv, Quality(resolution="auto", url=srv.direct_url)))
+                if _is_true_4k(q.resolution):
+                    true_4k_pairs.append((1000, _server_priority(srv), srv, q))
+            if not srv.qualities and srv.direct_url and _is_true_4k(srv.direct_url):
+                true_4k_pairs.append((1000, _server_priority(srv), srv, Quality(resolution="4K", url=srv.direct_url)))
 
-        # Sort descending by score, ascending by server priority
-        scored_pairs.sort(key=lambda x: (-x[0], x[1]))
-        return [(srv, q) for _, _, srv, q in scored_pairs]
+        # Sort by server priority only (all are true 4K)
+        true_4k_pairs.sort(key=lambda x: x[1])
+        return [(srv, q) for _, _, srv, q in true_4k_pairs]
 
     # Pass 1: exact matches
     for srv in sorted_servers:

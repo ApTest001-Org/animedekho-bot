@@ -41,7 +41,9 @@ DEFAULT_HEADERS = {
 }
 
 # Domains that need cloudscraper (Cloudflare-protected)
+# V2 #7: animedekho.tv is the live domain (.app 301-redirects to it).
 _CLOUDFLARE_DOMAINS = (
+    "animedekho.tv",
     "animedekho.app",
     "animedrive.me",
     "link.animedrive.me",

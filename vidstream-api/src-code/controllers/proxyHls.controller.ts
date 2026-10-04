@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { URL as EnvURL } from "../config/server";
-import { isValidProxyUrl } from "../utils/security";
+import { isValidProxyUrl, isValidFinalUrl } from "../utils/security";
 
 // GET /proxy/hls?url=string
 export default async function (req: Request, res: Response) {
@@ -40,6 +40,17 @@ async function m3u8(url: string, req: Request, res: Response) {
             'host': Url.host,
         }
     });
+
+    // V2 #22: redirect-chain re-validation — fetch() follows redirects, so
+    // the final URL must still be allowlisted before we proxy its body.
+    try {
+        const finalUrl = (response as any).url || url;
+        if (finalUrl && finalUrl !== url && !isValidFinalUrl(finalUrl)) {
+            console.log(`[HLS PROXY] [BLOCKED REDIRECT]: ${url} -> ${finalUrl}`);
+            res.status(403).send('Forbidden: redirect target not allowlisted');
+            return;
+        }
+    } catch { /* fail-open to original behaviour only for validation errors */ }
 
     console.log(`[HLS PROXY] [M3U8] [${response.status}]: ${Url.host} - ${url}`);
 
@@ -86,6 +97,16 @@ async function handleResourceRequest(url, req, res) {
             'host': Url.host,
         }
     });
+
+    // V2 #22: redirect-chain re-validation for segments as well.
+    try {
+        const finalUrl = (response as any).url || url;
+        if (finalUrl && finalUrl !== url && !isValidFinalUrl(finalUrl)) {
+            console.log(`[HLS PROXY] [BLOCKED REDIRECT]: ${url} -> ${finalUrl}`);
+            res.status(403).send('Forbidden: redirect target not allowlisted');
+            return;
+        }
+    } catch {}
 
     console.log(`[HLS PROXY] [VIDEO SEGMENT] [${response.status}]: ${Url.host}`);
 

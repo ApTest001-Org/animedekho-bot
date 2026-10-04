@@ -175,17 +175,38 @@ class AnimeDekhoAPI:
 
     # ── Detail pages ──────────────────────────────────────────────
 
+    async def _fetch_with_domain_fallback(self, path: str) -> str:
+        """V2 #7-#10: try live .tv domain first, fall back to legacy .app.
+
+        Raises the last error if both fail so callers can use the
+        multi-source fallback instead of showing a bare 403.
+        """
+        urls = [f"{cfg.base_url}{path}"]
+        fallback_base = getattr(cfg, "fallback_base_url", "")
+        if fallback_base and fallback_base != cfg.base_url:
+            urls.append(f"{fallback_base}{path}")
+        last_err: Exception | None = None
+        for u in urls:
+            try:
+                return await http_client.get(u)
+            except Exception as e:
+                last_err = e
+                log.warning("AnimeDekho fetch failed for %s (%s), trying next domain...", u, e)
+                continue
+        raise last_err or RuntimeError(f"AnimeDekho fetch failed for {path}")
+
     async def get_series(self, slug: str) -> Series:
-        url = f"{cfg.base_url}{cfg.series_path}/{slug}/"
+        url_path = f"{cfg.series_path}/{slug}/"
         try:
-            html = await http_client.get(url)
+            html = await self._fetch_with_domain_fallback(url_path)
             series = parse_series_detail(html, slug)
         except Exception as e:
+            # V2 #7-#10: log 403 distinctly, then retry base slug on both domains.
+            log.warning("get_series 403/fetch failed for '%s' (%s)", slug, e)
             clean_s = re.sub(r'-(?:season-\d+|s\d+|part-\d+|cour-\d+|hindi|dubbed|subbed)$', '', slug)
             if clean_s != slug:
                 log.info("get_series failed for '%s', retrying base slug '%s'", slug, clean_s)
-                url_base = f"{cfg.base_url}{cfg.series_path}/{clean_s}/"
-                html = await http_client.get(url_base)
+                html = await self._fetch_with_domain_fallback(f"{cfg.series_path}/{clean_s}/")
                 series = parse_series_detail(html, clean_s)
             else:
                 raise e
@@ -200,8 +221,13 @@ class AnimeDekhoAPI:
         return series
 
     async def get_episode(self, ep_slug: str) -> Episode:
-        url = f"{cfg.base_url}{cfg.episode_path}/{ep_slug}/"
-        html = await http_client.get(url)
+        url_path = f"{cfg.episode_path}/{ep_slug}/"
+        url = f"{cfg.base_url}{url_path}"
+        try:
+            html = await self._fetch_with_domain_fallback(url_path)
+        except Exception as e:
+            log.warning("get_episode fetch failed for '%s' (%s)", ep_slug, e)
+            raise
 
         # The site requires visiting a verification shortlink before
         # server data is shown. Extract and visit it, then re-fetch.
@@ -223,8 +249,13 @@ class AnimeDekhoAPI:
         return parse_episode_page(html, ep_slug)
 
     async def get_movie(self, slug: str) -> Movie:
-        url = f"{cfg.base_url}{cfg.movies_path}/{slug}/"
-        html = await http_client.get(url)
+        url_path = f"{cfg.movies_path}/{slug}/"
+        url = f"{cfg.base_url}{url_path}"
+        try:
+            html = await self._fetch_with_domain_fallback(url_path)
+        except Exception as e:
+            log.warning("get_movie fetch failed for '%s' (%s)", slug, e)
+            raise
 
         # Same verification shortlink flow as episodes
         shortlink_match = re.search(
