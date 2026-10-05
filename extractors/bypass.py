@@ -156,7 +156,43 @@ _NAVIGATION_HINTS = (
     "/tag/", "/tags/", "/category/", "/categories/", "/author/",
     "/contact", "/privacy", "/dmca", "/disclaimer", "/about",
     "cdn-cgi/", "/schedule", "schedule.php", "/page/",
+    "-list", "list_", "/movies", "/shows/", "first-on-ne", "exclusive",
+    "youtube.com", "youtu.be", "facebook.com", "twitter.com", "x.com/",
+    "instagram.com", "t.me/", "telegram.me",
 )
+
+_DOWNLOAD_HOSTS = (
+    "drive.google", "mega.nz", "mediafire.com", "hubcloud", "gamerxyt",
+    "gdflink", "gdflix", "filepress", "fpgo.", "workers.dev",
+    "googleusercontent.com", "filesforever", "megaup", "multiup",
+    "streamwish", "filemoon", "vidstream", "megacloud", "vidsrc",
+    "dood", "streamtape", "mp4upload", "vidguard",
+    "adhlinks.com/episode", "redirect",
+)
+
+_MEDIA_EXTS = (".mp4", ".mkv", ".webm", ".m3u8", ".mpd", ".zip", ".rar", ".7z")
+
+
+def _looks_like_download(url: str, label: str = "") -> bool:
+    """V3 #11: a plain season/list/social page is navigation, never media.
+
+    Download candidates are: archive/redirect/shortener links, iframes,
+    direct files, known file hosts, or episode-pattern links (1x25/S01E25).
+    """
+    low = url.lower()
+    if "archive.toonworld4all" in low or "redirect" in low:
+        return True
+    if any(ext in low for ext in _MEDIA_EXTS):
+        return True
+    if any(h in low for h in _DOWNLOAD_HOSTS):
+        return True
+    if re.search(r"\b\d{1,2}x\d{1,3}\b", f"{url} {label}", re.I):
+        return True
+    if re.search(r"[Ss]\d{1,2}[Ee]\d{1,3}\b", f"{url} {label}"):
+        return True
+    if re.search(r"(?:episode|ep)[-_ ]?\d{1,3}\b", f"{url} {label}", re.I):
+        return True
+    return False
 
 _CHALLENGE_HINTS = (
     "just a moment", "cf-chl", "cf_turnstile", "turnstile",
@@ -282,6 +318,8 @@ async def _resolve_animedubhindi_page(
         label = a.get_text(" ", strip=True)[:200]
         if _is_navigation_url(href, label):
             continue
+        if not _looks_like_download(href, label):
+            continue  # V3 #11: related-post/season pages are navigation
         q = _detect_quality_from_text(href + " " + label) or "Unknown"
         dest = href
         if is_shortener(href) or "redirect" in href.lower():
@@ -379,6 +417,8 @@ async def _resolve_toonworld_url(
                 continue
             if "/zip/" in href.lower():
                 continue  # batch-archive pages: not episode files, skip fast
+            if not _looks_like_download(href, label):
+                continue  # V3 #11: plain season/list pages are navigation
             dest = href
             # Follow nested archive/redirect one more hop, then refetch.
             if "archive.toonworld4all" in href.lower() or "redirect" in href.lower() or is_shortener(href):
@@ -446,6 +486,8 @@ async def _resolve_toonworld_url(
                 continue
             if "/zip/" in href.lower():
                 continue
+            if not _looks_like_download(href, label):
+                continue  # V3 #11: plain season/list pages are navigation
             if "archive.toonworld4all" in href.lower() or "redirect" in href.lower() or is_shortener(href):
                 dest = await _bounded_bypass(href)
                 if dest and dest != href and dest not in seen:
@@ -479,6 +521,8 @@ async def _resolve_generic_page(
         label = a.get_text(" ", strip=True)[:200]
         if _is_navigation_url(href, label):
             continue
+        if not _looks_like_download(href, label):
+            continue  # V3 #11: plain pages are navigation, never media
         q = _detect_quality_from_text(href + " " + label) or "Unknown"
         dest = href
         if is_shortener(href) or "redirect" in href.lower():
