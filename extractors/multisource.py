@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from api.models import SearchResult
 from utils.helpers import clean_title, slug_to_title
+from utils.anime_match import normalize_provider_url, normalize_quality
 from extractors.animedubhindi import animedubhindi
 from extractors.animedrive import animedrive
 from extractors.toonflix import toonflix
@@ -22,15 +23,108 @@ from extractors.shortener import is_shortener, detect_and_bypass, is_valid_media
 log = logging.getLogger(__name__)
 
 
+def _is_provider_catalog_page(source: str, url: str) -> bool:
+    """Return True for a provider post/episode page, not a media URL."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url or "")
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    if any(path.endswith(ext) for ext in (".mp4", ".mkv", ".m3u8", ".webm")):
+        return False
+    host_groups = {
+        "AnimeDubHindi": ("animedubhindi.link", "adhlinks.com"),
+        "RareAnimes": ("rareanimes.mov",),
+        "ToonWorld4All": ("toonworld4all.me", "archive.toonworld4all"),
+        "DeadToons": ("deadtoons.sbs",),
+    }
+    return any(host == item or host.endswith("." + item) for item in host_groups.get(source, ()))
+
+
+def _sync_find_provider_link(url: str) -> str | None:
+    """Find an external download/embed link on a fallback provider page.
+
+    RareAnimes and DeadToons commonly expose a second episode page.  Returning
+    that HTML URL to the downloader is never safe; this bounded scraper only
+    returns a media-looking external link and leaves final validation to the
+    async resolver pipeline.
+    """
+    try:
+        import cloudscraper
+        from bs4 import BeautifulSoup
+        from urllib.parse import urlparse
+
+        scraper = cloudscraper.create_scraper(
+            browser={"browser": "chrome", "platform": "windows", "desktop": True}
+        )
+        response = scraper.get(url, timeout=10)
+        if response.status_code != 200:
+            return None
+        page_host = urlparse(url).netloc.lower()
+        for anchor in BeautifulSoup(response.text, "html.parser").find_all("a", href=True):
+            candidate = normalize_provider_url(anchor["href"], url)
+            if not candidate:
+                continue
+            parsed = urlparse(candidate)
+            candidate_host = parsed.netloc.lower()
+            path = parsed.path.lower()
+            is_media_path = any(path.endswith(ext) for ext in (".mp4", ".mkv", ".m3u8", ".webm", ".zip"))
+            looks_like_provider = any(
+                token in candidate.lower()
+                for token in ("embed", "player", "stream", "hubcloud", "gamerxyt", "download", "redirect")
+            )
+            if candidate_host == page_host and not is_media_path:
+                continue
+            if is_media_path or is_shortener(candidate) or looks_like_provider:
+                return candidate
+    except Exception as exc:
+        log.debug("Provider-page link extraction failed for %s: %s", url[:80], exc)
+    return None
+
+
+def _choose_resolved_variant(resolved: dict, want_norm: str) -> tuple[str, str] | None:
+    """Pick an exact player variant, never the nearest quality.
+
+    Returns ``(url, quality)``.  A source with no quality metadata remains
+    ``Unknown`` and may be used only as the manager's final conservative
+    fallback; a known variant set without the requested quality is rejected.
+    """
+    if not resolved or not resolved.get("url"):
+        return None
+    variants = resolved.get("qualities") or []
+    if variants and want_norm != "auto":
+        for variant in variants:
+            if isinstance(variant, dict):
+                q = variant.get("resolution") or variant.get("quality") or ""
+                v_url = variant.get("url") or ""
+            else:
+                q = getattr(variant, "resolution", "") or getattr(variant, "label", "")
+                v_url = getattr(variant, "url", "")
+            if normalize_quality(q) == want_norm and v_url:
+                return v_url, normalize_quality(q)
+        return None
+
+    detected = normalize_quality(str(resolved.get("quality", "Unknown")))
+    if want_norm != "auto":
+        if detected == want_norm:
+            return resolved["url"], detected
+        if detected not in {"Unknown", "auto"}:
+            return None
+        return resolved["url"], "Unknown"
+    return resolved["url"], "Unknown" if detected == "auto" else detected
+
+
 class MultiSourceManager:
     """Manages primary, secondary, and fallback download/streaming sources."""
 
     def __init__(self):
         # Direct download/video sources prioritized first (Issue #22 & #23)
         self.sources = [
+            # Keep this order explicit: a faster lower-priority response must
+            # not replace a valid result from the preferred provider.
             ("AnimeDubHindi", animedubhindi),
-            ("ToonWorld4All", toonworld4all),
             ("RareAnimes", rareanimes),
+            ("ToonWorld4All", toonworld4all),
             ("DeadToons", deadtoons),
             ("TOONo", toono),
             ("ToonAnime", toonanime),
@@ -70,8 +164,11 @@ class MultiSourceManager:
                 for item in raw_items:
                     raw_title = item.get("title", "")
                     title = clean_title(raw_title) or raw_title
-                    url = item.get("url", "")
+                    url = normalize_provider_url(item.get("url", ""))
                     poster = item.get("poster", "")
+                    if not url:
+                        log.warning("Ignoring non-absolute fallback result from %s: %r", name, item.get("url"))
+                        continue
 
                     # Generate clean slug
                     slug = re.sub(r"[^a-zA-Z0-9]+", "-", title.lower()).strip("-")
@@ -199,12 +296,26 @@ class MultiSourceManager:
 
             # V3 #2: skip known non-exact qualities outright.
             got_q = res.get("quality", "Unknown") or "Unknown"
+            detected_q = res.get("detected_quality", got_q) or got_q
+            verified_q = res.get("verified_quality", got_q) or got_q
             got_norm = normalize_quality(got_q)
+            # ``auto`` is not proof of a requested resolution.  Keep it
+            # conservative as Unknown rather than rejecting a source before
+            # its player/master playlist can expose exact variants.
+            if got_norm == "auto":
+                got_norm = "Unknown"
+                got_q = "Unknown"
+                if normalize_quality(str(detected_q)) == "auto":
+                    detected_q = "Unknown"
+                if normalize_quality(str(verified_q)) == "auto":
+                    verified_q = "Unknown"
             if want_norm != "auto" and got_norm != "Unknown" and got_norm != want_norm:
                 log.info("Source '%s' returned [%s] for [%s] request — skipping (V3 #2 exact-only)", name, got_q, quality_pref)
                 return None, f"{name}: {got_q} ≠ {quality_pref} → skipped", "skip"
 
-            curr_url = res["url"].strip()
+            curr_url = normalize_provider_url(res["url"])
+            if not curr_url:
+                return None, f"{name}: non-absolute URL", "skip"
             original_url = curr_url
             log.info("Source '%s' returned initial URL: %s", name, curr_url[:80])
 
@@ -235,7 +346,42 @@ class MultiSourceManager:
                     log.warning("HubCloud resolution failed for %s: %s", curr_url, he)
                     return None, f"{name}: HubCloud error", "skip"
 
-            # Stage 3: Player / Embed resolution
+            # Stage 3: Provider post/episode pages are not downloadable
+            # media.  Some fallback extractors return one final provider page
+            # rather than an embed; resolve it once, otherwise fall through.
+            if _is_provider_catalog_page(name, curr_url):
+                # First support pages that embed a stream in their HTML.
+                resolved_page = await resolve_player_url(curr_url)
+                chosen = _choose_resolved_variant(resolved_page or {}, want_norm)
+                if chosen and is_valid_media_destination(chosen[0]):
+                    curr_url, resolved_q = chosen
+                    if resolved_q != "Unknown":
+                        got_q, got_norm = resolved_q, normalize_quality(resolved_q)
+                        detected_q = verified_q = resolved_q
+                else:
+                    page_quality = normalize_quality(str((resolved_page or {}).get("quality", "Unknown")))
+                    if (resolved_page or {}).get("qualities") or page_quality not in {"Unknown", "auto"}:
+                        return None, f"{name}: requested quality unavailable on provider page", "skip"
+                    # Then follow one provider-page link.  This is deliberately
+                    # bounded to avoid redirect loops and arbitrary navigation.
+                    loop = asyncio.get_running_loop()
+                    discovered = await loop.run_in_executor(None, _sync_find_provider_link, curr_url)
+                    if not discovered:
+                        log.warning("Provider page did not yield playable media for %s: %s", name, curr_url[:80])
+                        return None, f"{name}: provider page unresolvable", "skip"
+                    curr_url = discovered
+                    if is_shortener(curr_url) or "redirect" in curr_url.lower():
+                        curr_url = await detect_and_bypass(curr_url)
+                    if any(x in curr_url.lower() for x in ("hubcloud", "gamerxyt")):
+                        hub_loop = asyncio.get_running_loop()
+                        hub_res = await hub_loop.run_in_executor(
+                            None, animedrive._resolve_hubcloud, animedrive._get_scraper(), curr_url
+                        )
+                        curr_url = hub_res or ""
+                    if not curr_url:
+                        return None, f"{name}: provider link resolution failed", "skip"
+
+            # Stage 4: Player / Embed resolution
             is_player = any(k in curr_url.lower() for k in (
                 "embed", "player", "trembed", "trid", "streamwish", "playerwish",
                 "filemoon", "kerapoxy", "vidstream", "rabbitstream", "megacloud",
@@ -244,12 +390,16 @@ class MultiSourceManager:
             ))
             if is_player and not any(ext in curr_url.lower() for ext in (".m3u8", ".mp4", ".mkv", ".webm")):
                 resolved = await resolve_player_url(curr_url)
-                if resolved and resolved.get("url") and is_valid_media_destination(resolved["url"]):
-                    log.info("Successfully resolved player embed via %s -> %s", name, resolved["url"][:80])
-                    curr_url = resolved["url"]
+                chosen = _choose_resolved_variant(resolved or {}, want_norm)
+                if chosen and is_valid_media_destination(chosen[0]):
+                    log.info("Successfully resolved player embed via %s -> %s", name, chosen[0][:80])
+                    curr_url, resolved_q = chosen
+                    if resolved_q != "Unknown":
+                        got_q, got_norm = resolved_q, normalize_quality(resolved_q)
+                        detected_q = verified_q = resolved_q
                 else:
-                    log.warning("Player embed resolution failed or returned invalid media for %s on %s; rejecting embed page", curr_url[:60], name)
-                    return None, f"{name}: player unresolvable", "skip"
+                    log.warning("Player embed resolution failed, lacked exact quality, or returned invalid media for %s on %s; rejecting embed page", curr_url[:60], name)
+                    return None, f"{name}: player unresolvable/quality unavailable", "skip"
 
             # Stage 4: Final Validation
             if not is_valid_media_destination(curr_url):
@@ -260,8 +410,8 @@ class MultiSourceManager:
                 "url": curr_url,
                 "quality": got_q,
                 "requested_quality": res.get("requested_quality", quality_pref),
-                "detected_quality": res.get("detected_quality", got_q),
-                "verified_quality": res.get("verified_quality", got_q),
+                "detected_quality": detected_q,
+                "verified_quality": verified_q,
                 "source": name,
                 "provider": infer_provider(curr_url),
                 "original_url": original_url,
@@ -328,29 +478,64 @@ class MultiSourceManager:
                             name, extractor, search_title, season, episode,
                             quality_pref, want_norm,
                         ),
-                        timeout=75,
+                        timeout=30,
                     )
                 except asyncio.TimeoutError:
-                    log.warning("Fallback source '%s' timed out (75s); skipping", name)
+                    log.warning("Fallback source '%s' timed out (30s); skipping", name)
                     return None, f"{name}: timeout", "skip"
                 except Exception as e:
                     log.warning("Fallback resolver '%s' failed for '%s' S%dE%d: %s", name, search_title, season, episode, e)
                     return None, f"{name}: error {e}", "skip"
 
-        for entry, diag, kind in await asyncio.gather(*[_one(it) for it in ordered]):
+        # Keep the concurrency benefit, but cap the whole fan-out.  A dead
+        # provider must not make users wait 75 seconds per semaphore batch.
+        tasks = [asyncio.create_task(_one(item)) for item in ordered]
+        done, pending = await asyncio.wait(tasks, timeout=60)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        # Re-read completed tasks in source order so diagnostics are
+        # deterministic even though completion order is intentionally not.
+        for item, task in zip(ordered, tasks):
+            if task in pending:
+                diag_trail.append(f"{item[0]}: total timeout")
+                continue
+            try:
+                entry, diag, kind = task.result()
+            except Exception as exc:
+                log.warning("Fallback task '%s' failed: %s", item[0], exc)
+                diag_trail.append(f"{item[0]}: task error")
+                continue
             diag_trail.append(diag)
             if kind == "exact" and entry:
                 exact_candidates.append(entry)
             elif kind == "unknown" and entry:
                 unknown_candidates.append(entry)
 
-        # V3 #16: fastest healthy exact-quality link wins; Unknown only when
-        # no exact candidate exists (post-download ffprobe still enforces).
+        # Select by source priority first, then use health/latency within
+        # that source.  The old implementation put every provider in one
+        # fastest-link pool, so a quick Rare/ToonWorld response could silently
+        # replace a valid AnimeDubHindi result.
         pool = exact_candidates or unknown_candidates
         if not pool:
             log.info("MultiSource: no candidates (%s)", "; ".join(diag_trail))
             return None
-        best, health_diags = await select_fastest_healthy(pool)
+
+        priority = {name: index for index, (name, _extractor) in enumerate(ordered)}
+        grouped: dict[str, list[dict]] = {}
+        for candidate in pool:
+            grouped.setdefault(candidate.get("source", ""), []).append(candidate)
+
+        health_diags: list[dict] = []
+        best = None
+        for source_name in sorted(grouped, key=lambda item: priority.get(item, len(priority))):
+            source_best, source_diags = await select_fastest_healthy(grouped[source_name])
+            health_diags.extend(source_diags)
+            if source_best:
+                best = source_best
+                break
+
         if not best:
             log.info("MultiSource: all %d candidates unhealthy — failing (V3 #16)", len(pool))
             return None

@@ -12,6 +12,8 @@ V3 #5 rule:
 from __future__ import annotations
 
 import re
+from html import unescape
+from urllib.parse import urljoin, urlparse
 
 _STOP = {
     "season", "seasons", "episode", "episodes", "hindi", "dubbed", "dub",
@@ -67,6 +69,52 @@ def matches_season(title: str, url: str, season: int) -> bool:
         # No season marker → only acceptable for season 1 lookups.
         return season == 1
     return season in m_candidates
+
+
+def normalize_provider_url(value: str, base_url: str = "") -> str:
+    """Return a clean absolute HTTP(S) provider URL, or ``""``.
+
+    Provider HTML frequently uses root-relative or entity-encoded links.  A
+    relative URL must be joined against the page that contained it; blindly
+    concatenating the site root breaks nested paths and can send the downloader
+    to a different page.
+    """
+    raw = unescape((value or "").strip())
+    if not raw:
+        return ""
+    absolute = urljoin(base_url or "", raw)
+    parsed = urlparse(absolute)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return absolute
+
+
+def _explicit_seasons(blob: str) -> set[int]:
+    """Extract explicit season markers without treating ``s10`` as ``s1``."""
+    seasons: set[int] = set()
+    for pattern in (r"season[\s\-_]*(\d{1,2})", r"(?<![a-z])s(\d{1,2})(?!\d)"):
+        seasons.update(int(m.group(1)) for m in re.finditer(pattern, blob.lower()))
+    return seasons
+
+
+def matches_episode(title: str, url: str, season: int, episode: int) -> bool:
+    """Match an episode link while keeping season markers season-safe.
+
+    ``Episode 1`` is allowed when the already selected post is season-aware,
+    but ``1x01``/``S2E01`` must agree with the requested season.  This avoids
+    the common fallback bug where episode 1 from another season wins first.
+    """
+    blob = f"{title or ''} {url or ''}"
+    explicit = _explicit_seasons(blob)
+    if explicit and season not in explicit:
+        return False
+
+    patterns = (
+        rf"(?<!\d){season}x0*{episode}(?!\d)",
+        rf"(?<![a-z])s0*{season}\s*e0*{episode}(?!\d)",
+        rf"\b(?:episode|episodes|ep|e)\s*[:._-]?\s*0*{episode}(?!\d)",
+    )
+    return any(re.search(pattern, blob, re.IGNORECASE) for pattern in patterns)
 
 
 def normalize_quality(q: str) -> str:

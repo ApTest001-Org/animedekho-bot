@@ -94,10 +94,12 @@ def is_valid_media_destination(url: str) -> bool:
     Verify that resolved URL is not a known tracking/ad URL, shortener,
     or intermediate HTML landing/redirect page (Issue #19, #21).
     """
-    if not url or not url.startswith("http"):
+    if not url:
         return False
     try:
-        parsed = urlparse(url)
+        parsed = urlparse(url.strip())
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            return False
         host = parsed.netloc.lower()
         path = parsed.path.lower()
 
@@ -108,6 +110,16 @@ def is_valid_media_destination(url: str) -> bool:
         # Cannot be an ad/tracking domain
         if any(ad_dom in host for ad_dom in _AD_AND_TRACKING_DOMAINS):
             return False
+
+        # Provider posts and episode pages are navigation, not media.  Do not
+        # hand these to the downloader just because they are absolute URLs.
+        provider_hosts = (
+            "animedubhindi.link", "adhlinks.com", "rareanimes.mov",
+            "toonworld4all.me", "deadtoons.sbs",
+        )
+        if any(host == domain or host.endswith("." + domain) for domain in provider_hosts):
+            if not any(path.endswith(ext) for ext in (".mp4", ".mkv", ".m3u8", ".webm", ".zip")):
+                return False
 
         # Cannot be an intermediate redirect script or archive link
         if "redirect/main.php" in path or "archive.toonworld4all" in host:

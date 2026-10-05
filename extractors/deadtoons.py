@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 import cloudscraper
 
 from utils.anilist import is_valid_poster_url
+from utils.anime_match import matches_episode, matches_season, normalize_provider_url
 
 log = logging.getLogger(__name__)
 
@@ -49,11 +50,11 @@ class DeadToonsExtractor:
             seen = set()
 
             for a in soup.find_all("a", href=True):
-                href = a["href"]
+                href = normalize_provider_url(a["href"], url)
                 if "/posts/" not in href or href in seen:
                     continue
                 seen.add(href)
-                full_url = href if href.startswith("http") else f"{self._base_url}{href}"
+                full_url = href
                 title = a.get_text(strip=True)
                 if not title or len(title) < 3 or title.lower() in ("completed", "ongoing", "movie"):
                     continue
@@ -110,17 +111,10 @@ class DeadToonsExtractor:
             href = res.get("url", "")
             if not is_confident_match(anime_title, t, href):
                 continue
-            if (
-                f"season {season}" in t.lower()
-                or f"season {season:02d}" in t.lower()
-                or f"s{season}" in t.lower()
-                or f"s{season:02d}" in t.lower()
-                or (season == 1 and "season" not in t.lower() and "s0" not in t.lower() and "s1" not in t.lower())
-            ):
-                if not matches_season(t, href, season):
-                    continue
-                target_post = res
-                break
+            if not matches_season(t, href, season):
+                continue
+            target_post = res
+            break
 
         if not target_post:
             log.info("DeadToons: No verified season %d post for '%s'", season, anime_title)
@@ -133,11 +127,14 @@ class DeadToonsExtractor:
                 return None
             soup = BeautifulSoup(r.text, "html.parser")
 
-            # Look for episode download link (e.g., /episode/.../{season}x{episode})
-            pattern = re.compile(rf"/{season}x0*{episode}\b", re.I)
+            # Look for the requested season and episode together.  Do not
+            # let a bare /episode/1x01 from another season win first.
             for a in soup.find_all("a", href=True):
-                href = a["href"]
-                if pattern.search(href) or f"episode/{season}x{episode}" in href.lower():
+                href = normalize_provider_url(a["href"], post_url)
+                txt = a.get_text(" ", strip=True)
+                if a.parent:
+                    txt = f"{a.parent.get_text(' ', strip=True)} {txt}"
+                if matches_episode(txt, href, season, episode) and href:
                     return {
                         "url": href,
                         "quality": "Unknown",

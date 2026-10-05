@@ -4,13 +4,56 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin
 from bs4 import BeautifulSoup
 import cloudscraper
 
 from utils.anilist import is_valid_poster_url
+from utils.anime_match import matches_episode, matches_season, normalize_provider_url
 
 log = logging.getLogger(__name__)
+
+
+def _extract_props_json(page: str) -> dict | None:
+    """Extract nested ``window.__PROPS__`` JSON without a fragile regex.
+
+    A non-greedy ``{.*?}`` stops at the first nested object and fails on the
+    current archive payload.  This small scanner is string-aware, so braces in
+    URLs or quoted JSON values do not corrupt the payload.
+    """
+    marker = re.search(r"(?:window\.|var\s+)?__PROPS__\s*=", page or "")
+    if not marker:
+        return None
+    start = page.find("{", marker.end())
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(page)):
+        char = page[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    import json
+                    value = json.loads(page[start:idx + 1])
+                    return value if isinstance(value, dict) else None
+                except (TypeError, ValueError):
+                    return None
+    return None
 
 
 def _get_scraper() -> cloudscraper.CloudScraper:
@@ -53,8 +96,8 @@ class ToonWorld4AllExtractor:
                 title_el = art.find(["h2", "h3", "h4", "h1"])
                 if not a or not title_el:
                     continue
-                href = a["href"]
-                if href in seen or "how-to-download" in href or "anime-shows-list" in href:
+                href = normalize_provider_url(a["href"], url)
+                if not href or href in seen or "how-to-download" in href or "anime-shows-list" in href:
                     continue
                 seen.add(href)
                 title = title_el.get_text(strip=True)
@@ -111,17 +154,10 @@ class ToonWorld4AllExtractor:
             href = res.get("url", "")
             if not is_confident_match(anime_title, t, href):
                 continue
-            if (
-                f"season {season}" in t.lower()
-                or f"season {season:02d}" in t.lower()
-                or f"s{season}" in t.lower()
-                or f"s{season:02d}" in t.lower()
-                or (season == 1 and "season" not in t.lower() and "s0" not in t.lower() and "s1" not in t.lower())
-            ):
-                if not matches_season(t, href, season):
-                    continue
-                target_post = res
-                break
+            if not matches_season(t, href, season):
+                continue
+            target_post = res
+            break
 
         if not target_post:
             log.info("ToonWorld4All: No verified season %d post for '%s'", season, anime_title)
@@ -137,57 +173,58 @@ class ToonWorld4AllExtractor:
             if not content:
                 content = soup
 
-            # Match episode in archive link or redirect link
-            ep_patterns = [
-                re.compile(rf"-{season}x0*{episode}\b", re.I),
-                re.compile(rf"episode.*{season}x0*{episode}\b", re.I),
-                re.compile(rf"(?:ep|episode)\s*0*{episode}\b", re.I),
-            ]
-
+            # Match the requested episode without allowing another season's
+            # 1x01/S2E01 link to win first.
             for a in content.find_all("a", href=True):
-                href = a["href"]
-                txt = a.get_text(" ", strip=True).lower()
-                for pat in ep_patterns:
-                    if pat.search(href) or pat.search(txt):
-                        resolved_url = href
-                        # Unpack archive redirect page if present
-                        if "archive.toonworld4all" in href or "redirect" in href:
-                            try:
-                                from urllib.parse import urljoin
-                                r_arch = s.get(href, headers={"Referer": post_url}, timeout=10)
-                                if r_arch.status_code == 200:
-                                    soup_arch = BeautifulSoup(r_arch.text, "html.parser")
-                                    for a_arch in soup_arch.find_all("a", href=True):
-                                        if "redirect" in a_arch["href"]:
-                                            redir_full = urljoin(href, a_arch["href"])
-                                            r_red = s.get(redir_full, headers={"Referer": href}, timeout=10)
-                                            m_props = re.search(r'window\.__PROPS__\s*=\s*(\{.*?\});', r_red.text)
-                                            if m_props:
-                                                import json
-                                                props = json.loads(m_props.group(1))
-                                                link_info = props.get("link") or {}
-                                                dom = link_info.get("domain", "")
-                                                hid = link_info.get("hidden", "")
-                                                if dom and hid:
-                                                    root_dl = dom.rstrip("/") + "/" + hid
-                                                    resolved_url = root_dl.replace("/video/", "/drive/")
-                                                    log.info("ToonWorld4All: Extracted root download URL: %s", resolved_url)
-                                                    break
-                                                elif props.get("destination"):
-                                                    resolved_url = props["destination"]
-                                                    break
-                            except Exception as arch_err:
-                                log.warning("ToonWorld4All archive unpack note: %s", arch_err)
+                href = normalize_provider_url(a["href"], post_url)
+                txt = a.get_text(" ", strip=True)
+                if a.parent:
+                    txt = f"{a.parent.get_text(' ', strip=True)} {txt}"
+                if not href or not matches_episode(txt, href, season, episode):
+                    continue
+                resolved_url = href
 
-                        return {
-                            "url": resolved_url,
-                            "quality": "Unknown",
-                            "requested_quality": quality_pref,
-                            "detected_quality": "Unknown",
-                            "verified_quality": "Unknown",
-                            "source": "ToonWorld4All",
-                            "poster": target_post.get("poster"),
-                        }
+                # Unpack archive redirect pages when the provider has not
+                # already exposed the final download URL.
+                if "archive.toonworld4all" in href or "redirect" in href:
+                    try:
+                        r_arch = s.get(href, headers={"Referer": post_url}, timeout=10)
+                        if r_arch.status_code == 200:
+                            soup_arch = BeautifulSoup(r_arch.text, "html.parser")
+                            for a_arch in soup_arch.find_all("a", href=True):
+                                archive_href = normalize_provider_url(a_arch["href"], href)
+                                if "redirect" not in archive_href.lower():
+                                    continue
+                                r_red = s.get(archive_href, headers={"Referer": href}, timeout=10)
+                                props = _extract_props_json(r_red.text)
+                                if not props:
+                                    continue
+                                link_info = props.get("link") or {}
+                                if isinstance(link_info, dict):
+                                    dom = normalize_provider_url(link_info.get("domain", ""), archive_href)
+                                    hid = str(link_info.get("hidden", "")).strip()
+                                    if dom and hid:
+                                        resolved_url = urljoin(dom.rstrip("/") + "/", hid.lstrip("/"))
+                                        resolved_url = resolved_url.replace("/video/", "/drive/")
+                                        log.info("ToonWorld4All: Extracted root download URL: %s", resolved_url)
+                                        break
+                                destination = normalize_provider_url(str(props.get("destination", "")), archive_href)
+                                if destination:
+                                    resolved_url = destination
+                                    break
+                    except Exception as arch_err:
+                        log.warning("ToonWorld4All archive unpack note: %s", arch_err)
+
+                return {
+                    "url": resolved_url,
+                    "quality": "Unknown",
+                    "requested_quality": quality_pref,
+                    "detected_quality": "Unknown",
+                    "verified_quality": "Unknown",
+                    "source": "ToonWorld4All",
+                    "poster": target_post.get("poster"),
+                }
+
         except Exception as e:
             log.warning("ToonWorld4All resolve error for %s: %s", post_url, e)
 

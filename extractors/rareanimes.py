@@ -4,11 +4,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin
 from bs4 import BeautifulSoup
 import cloudscraper
 
 from utils.anilist import is_valid_poster_url
+from utils.anime_match import matches_episode, normalize_provider_url
 
 log = logging.getLogger(__name__)
 
@@ -52,8 +53,8 @@ class RareAnimesExtractor:
                 a = h2.find("a", href=True)
                 if not a:
                     continue
-                href = a["href"]
-                if href in seen:
+                href = normalize_provider_url(a["href"], url)
+                if not href or href in seen:
                     continue
                 seen.add(href)
                 title = a.get_text(strip=True)
@@ -114,17 +115,10 @@ class RareAnimesExtractor:
             href = res.get("url", "")
             if not is_confident_match(anime_title, t, href):
                 continue
-            if (
-                f"season {season}" in t.lower()
-                or f"season {season:02d}" in t.lower()
-                or f"s{season}" in t.lower()
-                or f"s{season:02d}" in t.lower()
-                or (season == 1 and "season" not in t.lower() and "s0" not in t.lower() and "s1" not in t.lower())
-            ):
-                if not matches_season(t, href, season):
-                    continue
-                target_post = res
-                break
+            if not matches_season(t, href, season):
+                continue
+            target_post = res
+            break
 
         if not target_post:
             log.info("RareAnimes: No verified season %d post for '%s'", season, anime_title)
@@ -142,13 +136,15 @@ class RareAnimesExtractor:
 
             # Search for episode-specific link or download section
             for a in content.find_all("a", href=True):
-                txt = a.get_text(" ", strip=True).lower()
-                href = a["href"]
-                # Match episode number e.g. "Ep 1", "Episode 01", "1x01"
-                ep_match = re.search(r"(?:ep|episode|e)\s*0*(\d+)\b", txt)
-                if ep_match and int(ep_match.group(1)) == episode:
-                    if "http" in href:
-                        return {
+                txt = a.get_text(" ", strip=True)
+                if a.parent:
+                    txt = f"{a.parent.get_text(' ', strip=True)} {txt}"
+                href = normalize_provider_url(a["href"], post_url)
+                # Match the requested season and episode together.  A bare
+                # "Episode 1" is valid only after the season-safe post match;
+                # an explicit 2x01/S2E01 must never satisfy an S1 lookup.
+                if matches_episode(txt, href, season, episode) and href:
+                    return {
                             "url": href,
                             "quality": "Unknown",
                             "requested_quality": quality_pref,

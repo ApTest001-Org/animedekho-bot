@@ -10,9 +10,10 @@ import base64
 import html
 import logging
 import re
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote_plus, urljoin, urlparse
 
 from bs4 import BeautifulSoup
+from utils.anime_match import normalize_provider_url
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ class AnimeDubHindiExtractor:
         search_query = clean or query
         clean_q = re.sub(r"[’'\"\-_:!?]+", " ", search_query).strip()
         clean_q = re.sub(r"\s+", " ", clean_q)
-        search_url = f"{self.base_url}/?s={clean_q}"
+        search_url = f"{self.base_url}/?s={quote_plus(clean_q)}"
         try:
             r = s.get(search_url, timeout=12)
             if r.status_code != 200:
@@ -61,10 +62,10 @@ class AnimeDubHindiExtractor:
 
             # Inspect post entries
             for a in soup.find_all("a", href=True):
-                href = a["href"].strip()
+                href = normalize_provider_url(a["href"], search_url)
                 if not href or href in seen_urls:
                     continue
-                if not href.startswith("http") or href.rstrip("/") == self.base_url.rstrip("/"):
+                if href.rstrip("/") == self.base_url.rstrip("/"):
                     continue
 
                 title = a.get_text(strip=True) or (a.get("title") or "").strip()
@@ -153,7 +154,7 @@ class AnimeDubHindiExtractor:
             # Look for episode directory link (e.g. https://new.adhlinks.com/episode/{slug}/)
             ep_directory_url = None
             for a in soup.find_all("a", href=True):
-                href = a["href"].strip()
+                href = normalize_provider_url(a["href"], post_url)
                 if "/episode/" in href or "adhlinks" in href:
                     ep_directory_url = href
                     break
@@ -305,7 +306,12 @@ class AnimeDubHindiExtractor:
                             r_re = s.get(target_url, headers={"Referer": base_dir_url}, timeout=10)
                             m_redir = re.search(r'redirectUrl\s*=\s*["\']([^"\']+)["\']', r_re.text)
                             if m_redir:
-                                target_dest = base64.b64decode(m_redir.group(1)).decode("utf-8", errors="ignore").strip()
+                                target_dest = normalize_provider_url(
+                                    base64.b64decode(m_redir.group(1)).decode("utf-8", errors="ignore"),
+                                    target_url,
+                                )
+                                if not target_dest:
+                                    continue
                                 log.info("AnimeDubHindi: Decoded re.php destination: %s", target_dest)
 
                                 # If destination is filesforever.link
@@ -313,7 +319,9 @@ class AnimeDubHindiExtractor:
                                     r_ff = s.get(target_dest, timeout=10)
                                     m_src = re.search(r'name=["\']source_url["\']\s+value=["\']([^"\']+)["\']', r_ff.text)
                                     if m_src:
-                                        worker_url = html.unescape(m_src.group(1).strip())
+                                        worker_url = normalize_provider_url(html.unescape(m_src.group(1)), target_dest)
+                                        if not worker_url:
+                                            continue
                                         log.info("AnimeDubHindi: Extracted direct worker URL: %s", worker_url[:80])
                                         return {
                                             "url": worker_url,
@@ -340,7 +348,7 @@ class AnimeDubHindiExtractor:
                     elif "redirect.php" in target_url:
                         try:
                             r_red = s.get(target_url, headers={"Referer": base_dir_url}, allow_redirects=False, timeout=10)
-                            loc = r_red.headers.get("Location")
+                            loc = normalize_provider_url(r_red.headers.get("Location", ""), target_url)
                             if loc:
                                 log.info("AnimeDubHindi: redirect.php 302 -> %s", loc)
                                 return {
