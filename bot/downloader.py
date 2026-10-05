@@ -1119,13 +1119,52 @@ async def download_media(
     variant_url: str = "",
     referer: str = "",
     job_id: str | None = None,
+    refresh_url=None,
 ) -> bool:
     """
     Unified multi-engine downloader:
     1. If URL is MP4 / direct file: use direct HTTP stream download.
     2. If URL is M3U8: try N_m3u8DL-RE.
     3. If N_m3u8DL-RE fails or is unavailable: fallback to FFmpeg.
+
+    refresh_url: optional async callable returning a FRESH direct URL for the
+    same title/quality (fixes time-limited signed links that 403 between
+    resolution and download). When provided, the URL is preflight-checked
+    first; a dead link triggers exactly one fresh re-resolve before failing.
     """
+    if refresh_url is not None:
+        # Stale-URL preflight: signed/proxied links can 403 between resolve
+        # and download. Verify reachability first; on failure pull ONE fresh
+        # URL from the source instead of burning minutes on a dead link.
+        try:
+            from extractors.health_probe import probe_url_health
+            pre = await probe_url_health(stream_url, referer or "")
+            if not pre.get("ok"):
+                log.warning("Preflight %s for [%s] %s — refreshing URL once",
+                            pre.get("error", "failed"), quality, stream_url[:80])
+                try:
+                    fresh = refresh_url()
+                    if asyncio.iscoroutine(fresh):
+                        fresh = await fresh
+                except Exception as re:
+                    log.warning("URL refresh failed: %s", re)
+                    fresh = None
+                if fresh and isinstance(fresh, str) and fresh.startswith("http") and fresh != stream_url:
+                    pre2 = await probe_url_health(fresh, referer or "")
+                    if pre2.get("ok"):
+                        log.info("Refresh recovered reachability (%s) — downloading fresh URL",
+                                 pre2.get("latency_ms"))
+                        if variant_url == stream_url:
+                            variant_url = ""
+                        stream_url = fresh
+                    else:
+                        log.warning("Fresh URL also unreachable (%s) — trying original anyway",
+                                    pre2.get("error"))
+                elif fresh and fresh != stream_url:
+                    stream_url = fresh
+        except Exception as pe:
+            log.debug("Preflight check skipped: %s", pe)
+
     is_hls = (
         ".m3u8" in stream_url.lower()
         or ".m3u8" in variant_url.lower()
@@ -1364,8 +1403,12 @@ async def download_and_upload(
     language: str = "",
     is_movie: bool = False,
     job_id: str | None = None,
+    refresh_url=None,
 ) -> tuple[bool, Message | None]:
-    """Download video + upload via Pyrogram MTProto with progress, custom thumbnail, and dump channel."""
+    """Download video + upload via Pyrogram MTProto with progress, custom thumbnail, and dump channel.
+
+    refresh_url: optional async callable returning a fresh direct URL
+    (forwarded to download_media for stale-link recovery)."""
     output_path = str(_TEMP_BASE / filename)
     overall_start = time.time()
     thumb_path = None
@@ -1469,7 +1512,8 @@ async def download_and_upload(
                 variant_url = resolved_var
 
         success = await download_media(
-            stream_url, quality, output_path, progress_msg, title, variant_url=variant_url, referer=referer, job_id=job_id
+            stream_url, quality, output_path, progress_msg, title, variant_url=variant_url, referer=referer, job_id=job_id,
+            refresh_url=refresh_url,
         )
 
         if not success:

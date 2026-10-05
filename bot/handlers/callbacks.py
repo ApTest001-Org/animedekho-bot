@@ -1032,6 +1032,37 @@ async def _resolve_destination_channel(series_slug: str, series_title: str = "",
     return None
 
 
+def _ms_refresh(series_title: str, season: int, episode: int, quality_pref: str, series_slug: str = ""):
+    """Build a stale-URL refresher closure for MultiSource results."""
+    async def _go():
+        try:
+            from extractors.multisource import multi_source_manager as _msm
+            r = await _msm.resolve_episode_stream(
+                series_title=series_title, season=season, episode=episode,
+                quality_pref=quality_pref, series_slug=series_slug,
+            )
+            return r["url"] if r and r.get("url") else None
+        except Exception:
+            return None
+    return _go
+
+
+def _extractor_refresh(kind: str, series_title: str, season: int, episode: int, quality_pref: str):
+    """Build a stale-URL refresher closure for AnimeDrive/ToonFlix results."""
+    async def _go():
+        try:
+            if kind == "animedrive":
+                from extractors.animedrive import animedrive as _ad
+                r = await _ad.resolve_episode(series_title, season=season, episode=episode, quality_pref=quality_pref)
+            else:
+                from extractors.toonflix import toonflix as _tf
+                r = await _tf.resolve_episode(series_title, season=season, episode=episode, quality_pref=quality_pref)
+            return r["url"] if r and r.get("url") else None
+        except Exception:
+            return None
+    return _go
+
+
 async def _do_batch_download(client: Client, chat_id, series, season, episodes, quality_pref, progress_msg, user,
                        batch_id: str | None = None, cancel_markup=None):
     """Execute batch download sequentially with multi-server fallback.
@@ -1128,6 +1159,7 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                             filename,
                             f"{series.title} S{season}E{ep.number}",
                             ep_msg, client,
+                                                        refresh_url=_extractor_refresh("animedrive", series.title, season, ep.number, "4K"),
                             referer=ad_res.get("referer", "https://hubcloud.ist/"),
                             poster_url=series.poster or ad_res.get("poster", ""),
                             destination_channel_id=dest_channel_id,
@@ -1148,6 +1180,7 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                                 filename,
                                 f"{series.title} S{season}E{ep.number}",
                                 ep_msg, client,
+                                                            refresh_url=_extractor_refresh("toonflix", series.title, season, ep.number, "4K"),
                                 referer=tf_res.get("referer", "https://drive.toonflix.in/"),
                                 poster_url=series.poster or tf_res.get("poster", ""),
                                 destination_channel_id=dest_channel_id,
@@ -1194,6 +1227,7 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                             filename,
                             f"{series.title} S{season}E{ep.number}",
                             ep_msg, client,
+                                                        refresh_url=_ms_refresh(series.title, season, ep.number, chosen_q.resolution, series.slug),
                             poster_url=series.poster or ms0.get("poster", ""),
                             destination_channel_id=dest_channel_id,
                             series_slug=series.slug,
@@ -1238,6 +1272,7 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                                 filename,
                                 f"{series.title} S{season}E{ep.number}",
                                 ep_msg, client,
+                                                            refresh_url=_extractor_refresh("animedrive", series.title, season, ep.number, chosen_q.resolution),
                                 referer=ad_res.get("referer", "https://hubcloud.ist/"),
                                 poster_url=series.poster or ad_res.get("poster", ""),
                                 destination_channel_id=dest_channel_id,
@@ -1258,6 +1293,7 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                                 filename,
                                 f"{series.title} S{season}E{ep.number}",
                                 ep_msg, client,
+                                                            refresh_url=_extractor_refresh("toonflix", series.title, season, ep.number, chosen_q.resolution),
                                 referer=tf_res.get("referer", "https://drive.toonflix.in/"),
                                 poster_url=series.poster or tf_res.get("poster", ""),
                                 destination_channel_id=dest_channel_id,
@@ -1285,6 +1321,7 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                                 filename,
                                 f"{series.title} S{season}E{ep.number}",
                                 ep_msg, client,
+                                                            refresh_url=_ms_refresh(series.title, season, ep.number, chosen_q.resolution, series.slug),
                                 poster_url=series.poster or ms_res.get("poster", ""),
                                 destination_channel_id=dest_channel_id,
                                 series_slug=series.slug,
@@ -1513,6 +1550,7 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                                     _poster_cache[series_slug] = poster_url
                         success, sent_msg = await download_and_upload(
                             chat_id, ms_res["url"], ms_res.get("quality", chosen_quality.resolution), filename, title, progress_msg, client,
+                                                        refresh_url=_ms_refresh(lookup_title, s_num, ep_num, chosen_quality.resolution, series_slug),
                             poster_url=poster_url or "",
                             destination_channel_id=dest_channel_id,
                             series_slug=series_slug,
@@ -1547,6 +1585,7 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                                     _poster_cache[series_slug] = poster_url
                         success, sent_msg = await download_and_upload(
                             chat_id, ad_res["url"], ad_res["quality"], filename, title, progress_msg, client,
+                                                        refresh_url=_extractor_refresh("animedrive", lookup_title, s_num, ep_num, chosen_quality.resolution),
                             referer=ad_res.get("referer", "https://hubcloud.ist/"),
                             poster_url=poster_url or "",
                             destination_channel_id=dest_channel_id,
@@ -1582,6 +1621,7 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                                     _poster_cache[series_slug] = poster_url
                         success, sent_msg = await download_and_upload(
                             chat_id, tf_res["url"], tf_res["quality"], filename, title, progress_msg, client,
+                                                        refresh_url=_extractor_refresh("toonflix", lookup_title, s_num, ep_num, chosen_quality.resolution),
                             referer=tf_res.get("referer", "https://drive.toonflix.in/"),
                             poster_url=poster_url or "",
                             destination_channel_id=dest_channel_id,

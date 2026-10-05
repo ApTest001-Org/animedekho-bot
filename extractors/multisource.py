@@ -178,6 +178,104 @@ class MultiSourceManager:
             source=source,
         )
 
+    async def _resolve_one_source(
+        self, name: str, extractor, search_title: str, season: int,
+        episode: int, quality_pref: str, want_norm: str,
+    ) -> tuple[dict | None, str, str]:
+        """Resolve + validate a single source. Returns (entry, diag, kind)
+        with kind in {"exact", "unknown", "skip"}."""
+        from utils.anime_match import normalize_quality
+        from extractors.health_probe import infer_provider
+        try:
+            log.info("Trying fallback source '%s' for '%s' S%dE%d [%s]...", name, search_title, season, episode, quality_pref)
+            res = await extractor.resolve_episode(
+                anime_title=search_title,
+                season=season,
+                episode=episode,
+                quality_pref=quality_pref,
+            )
+            if not res or not res.get("url"):
+                return None, f"{name}: no result", "skip"
+
+            # V3 #2: skip known non-exact qualities outright.
+            got_q = res.get("quality", "Unknown") or "Unknown"
+            got_norm = normalize_quality(got_q)
+            if want_norm != "auto" and got_norm != "Unknown" and got_norm != want_norm:
+                log.info("Source '%s' returned [%s] for [%s] request — skipping (V3 #2 exact-only)", name, got_q, quality_pref)
+                return None, f"{name}: {got_q} ≠ {quality_pref} → skipped", "skip"
+
+            curr_url = res["url"].strip()
+            original_url = curr_url
+            log.info("Source '%s' returned initial URL: %s", name, curr_url[:80])
+
+            # Stage 1: Shortener / Redirect resolution
+            if is_shortener(curr_url) or "redirect" in curr_url.lower() or "archive.toonworld4all" in curr_url.lower():
+                bypassed = await detect_and_bypass(curr_url)
+                if bypassed and bypassed != curr_url:
+                    log.info("Bypassed intermediate redirect/shortener on %s: %s -> %s", name, curr_url[:60], bypassed[:60])
+                    curr_url = bypassed
+                elif is_shortener(curr_url):
+                    log.warning("Shortener bypass failed for %s on %s; skipping source", curr_url[:60], name)
+                    return None, f"{name}: shortener bypass failed", "skip"
+
+            # Stage 2: HubCloud provider resolution
+            if any(x in curr_url.lower() for x in ("hubcloud", "gamerxyt")):
+                try:
+                    loop = asyncio.get_running_loop()
+                    hub_res = await loop.run_in_executor(
+                        None, animedrive._resolve_hubcloud, animedrive._get_scraper(), curr_url
+                    )
+                    if hub_res and is_valid_media_destination(hub_res):
+                        log.info("HubCloud resolved via animedrive helper: %s -> %s", curr_url[:60], hub_res[:60])
+                        curr_url = hub_res
+                    else:
+                        log.warning("HubCloud resolution returned unplayable target: %s", hub_res)
+                        return None, f"{name}: HubCloud unplayable", "skip"
+                except Exception as he:
+                    log.warning("HubCloud resolution failed for %s: %s", curr_url, he)
+                    return None, f"{name}: HubCloud error", "skip"
+
+            # Stage 3: Player / Embed resolution
+            is_player = any(k in curr_url.lower() for k in (
+                "embed", "player", "trembed", "trid", "streamwish", "playerwish",
+                "filemoon", "kerapoxy", "vidstream", "rabbitstream", "megacloud",
+                "vidsrc", "xerver.xyz", "turboviplay", "turbosplayer", "emturbovid",
+                "doodstream", "dood.", "streamtape", "strtape", "mp4upload", "vidguard", "vgfplay"
+            ))
+            if is_player and not any(ext in curr_url.lower() for ext in (".m3u8", ".mp4", ".mkv", ".webm")):
+                resolved = await resolve_player_url(curr_url)
+                if resolved and resolved.get("url") and is_valid_media_destination(resolved["url"]):
+                    log.info("Successfully resolved player embed via %s -> %s", name, resolved["url"][:80])
+                    curr_url = resolved["url"]
+                else:
+                    log.warning("Player embed resolution failed or returned invalid media for %s on %s; rejecting embed page", curr_url[:60], name)
+                    return None, f"{name}: player unresolvable", "skip"
+
+            # Stage 4: Final Validation
+            if not is_valid_media_destination(curr_url):
+                log.warning("Candidate URL failed media destination validation (%s) on %s; rejecting", curr_url[:80], name)
+                return None, f"{name}: media validation failed", "skip"
+
+            entry = {
+                "url": curr_url,
+                "quality": got_q,
+                "requested_quality": res.get("requested_quality", quality_pref),
+                "detected_quality": res.get("detected_quality", got_q),
+                "verified_quality": res.get("verified_quality", got_q),
+                "source": name,
+                "provider": infer_provider(curr_url),
+                "original_url": original_url,
+                "resolved_url": curr_url,
+                "resolver_stage": f"{name} → {infer_provider(curr_url)} → Direct Media",
+                "poster": res.get("poster"),
+            }
+            if got_norm == "Unknown":
+                return entry, f"{name}: Unknown quality (verify post-download)", "unknown"
+            return entry, f"{name}: exact {got_q} ✓", "exact"
+        except Exception as e:
+            log.warning("Fallback resolver '%s' failed for '%s' S%dE%d: %s", name, search_title, season, episode, e)
+            return None, f"{name}: error {e}", "skip"
+
     async def resolve_episode_stream(
         self,
         series_title: str,
@@ -215,105 +313,36 @@ class MultiSourceManager:
         unknown_candidates: list[dict] = []
         diag_trail: list[str] = []
 
-        for name, extractor in ordered:
-            try:
-                log.info("Trying fallback source '%s' for '%s' S%dE%d [%s]...", name, search_title, season, episode, quality_pref)
-                res = await extractor.resolve_episode(
-                    anime_title=search_title,
-                    season=season,
-                    episode=episode,
-                    quality_pref=quality_pref,
-                )
-                if not res or not res.get("url"):
-                    diag_trail.append(f"{name}: no result")
-                    continue
+        # Download-fix: resolve sources CONCURRENTLY (bounded) instead of
+        # sequentially. Time-limited signed URLs (HubCloud googleapis,
+        # worker proxies) expire while a sequential loop burns 60-90s;
+        # concurrency keeps every candidate fresh for the download step.
+        _sem = asyncio.Semaphore(3)
 
-                # V3 #2: skip known non-exact qualities outright.
-                got_q = res.get("quality", "Unknown") or "Unknown"
-                got_norm = normalize_quality(got_q)
-                if want_norm != "auto" and got_norm != "Unknown" and got_norm != want_norm:
-                    log.info("Source '%s' returned [%s] for [%s] request — skipping (V3 #2 exact-only)", name, got_q, quality_pref)
-                    diag_trail.append(f"{name}: {got_q} ≠ {quality_pref} → skipped")
-                    continue
+        async def _one(item):
+            name, extractor = item
+            async with _sem:
+                try:
+                    return await asyncio.wait_for(
+                        self._resolve_one_source(
+                            name, extractor, search_title, season, episode,
+                            quality_pref, want_norm,
+                        ),
+                        timeout=75,
+                    )
+                except asyncio.TimeoutError:
+                    log.warning("Fallback source '%s' timed out (75s); skipping", name)
+                    return None, f"{name}: timeout", "skip"
+                except Exception as e:
+                    log.warning("Fallback resolver '%s' failed for '%s' S%dE%d: %s", name, search_title, season, episode, e)
+                    return None, f"{name}: error {e}", "skip"
 
-                curr_url = res["url"].strip()
-                original_url = curr_url
-                log.info("Source '%s' returned initial URL: %s", name, curr_url[:80])
-
-                # Stage 1: Shortener / Redirect resolution
-                if is_shortener(curr_url) or "redirect" in curr_url.lower() or "archive.toonworld4all" in curr_url.lower():
-                    bypassed = await detect_and_bypass(curr_url)
-                    if bypassed and bypassed != curr_url:
-                        log.info("Bypassed intermediate redirect/shortener on %s: %s -> %s", name, curr_url[:60], bypassed[:60])
-                        curr_url = bypassed
-                    elif is_shortener(curr_url):
-                        log.warning("Shortener bypass failed for %s on %s; skipping source", curr_url[:60], name)
-                        diag_trail.append(f"{name}: shortener bypass failed")
-                        continue
-
-                # Stage 2: HubCloud provider resolution
-                if any(x in curr_url.lower() for x in ("hubcloud", "gamerxyt")):
-                    try:
-                        loop = asyncio.get_running_loop()
-                        hub_res = await loop.run_in_executor(
-                            None, animedrive._resolve_hubcloud, animedrive._get_scraper(), curr_url
-                        )
-                        if hub_res and is_valid_media_destination(hub_res):
-                            log.info("HubCloud resolved via animedrive helper: %s -> %s", curr_url[:60], hub_res[:60])
-                            curr_url = hub_res
-                        else:
-                            log.warning("HubCloud resolution returned unplayable target: %s", hub_res)
-                            diag_trail.append(f"{name}: HubCloud unplayable")
-                            continue
-                    except Exception as he:
-                        log.warning("HubCloud resolution failed for %s: %s", curr_url, he)
-                        diag_trail.append(f"{name}: HubCloud error")
-                        continue
-
-                # Stage 3: Player / Embed resolution
-                is_player = any(k in curr_url.lower() for k in (
-                    "embed", "player", "trembed", "trid", "streamwish", "playerwish",
-                    "filemoon", "kerapoxy", "vidstream", "rabbitstream", "megacloud",
-                    "vidsrc", "xerver.xyz", "turboviplay", "turbosplayer", "emturbovid",
-                    "doodstream", "dood.", "streamtape", "strtape", "mp4upload", "vidguard", "vgfplay"
-                ))
-                if is_player and not any(ext in curr_url.lower() for ext in (".m3u8", ".mp4", ".mkv", ".webm")):
-                    resolved = await resolve_player_url(curr_url)
-                    if resolved and resolved.get("url") and is_valid_media_destination(resolved["url"]):
-                        log.info("Successfully resolved player embed via %s -> %s", name, resolved["url"][:80])
-                        curr_url = resolved["url"]
-                    else:
-                        log.warning("Player embed resolution failed or returned invalid media for %s on %s; rejecting embed page", curr_url[:60], name)
-                        diag_trail.append(f"{name}: player unresolvable")
-                        continue
-
-                # Stage 4: Final Validation
-                if not is_valid_media_destination(curr_url):
-                    log.warning("Candidate URL failed media destination validation (%s) on %s; rejecting", curr_url[:80], name)
-                    diag_trail.append(f"{name}: media validation failed")
-                    continue
-
-                entry = {
-                    "url": curr_url,
-                    "quality": got_q,
-                    "requested_quality": res.get("requested_quality", quality_pref),
-                    "detected_quality": res.get("detected_quality", got_q),
-                    "verified_quality": res.get("verified_quality", got_q),
-                    "source": name,
-                    "provider": infer_provider(curr_url),
-                    "original_url": original_url,
-                    "resolved_url": curr_url,
-                    "resolver_stage": f"{name} → {infer_provider(curr_url)} → Direct Media",
-                    "poster": res.get("poster"),
-                }
-                if got_norm == "Unknown":
-                    unknown_candidates.append(entry)
-                else:
-                    exact_candidates.append(entry)
-                diag_trail.append(f"{name}: exact {got_q} ✓" if got_norm != "Unknown" else f"{name}: Unknown quality (verify post-download)")
-            except Exception as e:
-                log.warning("Fallback resolver '%s' failed for '%s' S%dE%d: %s", name, search_title, season, episode, e)
-                diag_trail.append(f"{name}: error {e}")
+        for entry, diag, kind in await asyncio.gather(*[_one(it) for it in ordered]):
+            diag_trail.append(diag)
+            if kind == "exact" and entry:
+                exact_candidates.append(entry)
+            elif kind == "unknown" and entry:
+                unknown_candidates.append(entry)
 
         # V3 #16: fastest healthy exact-quality link wins; Unknown only when
         # no exact candidate exists (post-download ffprobe still enforces).
