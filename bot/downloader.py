@@ -791,6 +791,10 @@ async def ffmpeg_download(
     success = os.path.exists(output_path) and os.path.getsize(output_path) > 0
     if success:
         log.info("FFmpeg download complete: %s (%s)", output_path, _format_size(os.path.getsize(output_path)))
+    else:
+        # V3 #10: never fail silently — the final DM block shows diagnostics,
+        # but the file log must carry the exact failing URL/quality too.
+        log.warning("FFmpeg download failed (no output file): url=%s quality=%s", stream_url[:120], quality)
     return success
 
 
@@ -1169,6 +1173,9 @@ async def download_media(
     if not ok and target_url != stream_url:
         ok = await ffmpeg_download(stream_url, output_path, progress_msg, title, quality, referer=referer, job_id=job_id)
 
+    if not ok:
+        # V3 #10: exact failure diagnostics in file log (DM block covers user side).
+        log.warning("download_media failed: [%s] %s (target=%s)", quality, stream_url[:120], target_url[:120])
     return ok
 
 
