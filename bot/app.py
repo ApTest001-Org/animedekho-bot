@@ -29,7 +29,7 @@ async def _on_start(client: Client):
     # Init MongoDB
     from bot.database import Database
     import bot.database as db_mod
-    db = Database(settings.bot.mongo_uri)
+    db = Database(settings.bot.mongo_uri, db_name=settings.bot.database_name)
     await db.init_indexes()
     db_mod.db = db
     log.info("MongoDB connected")

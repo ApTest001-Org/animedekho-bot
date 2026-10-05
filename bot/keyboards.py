@@ -14,11 +14,17 @@ S = settings.bot
 
 
 def _safe_cb(data: str) -> str:
-    """Ensure callback_data is within Telegram's 64-byte limit."""
-    encoded = data.encode("utf-8")
-    if len(encoded) <= 64:
-        return data
-    return data[:64]
+    """Ensure callback_data is within Telegram's 64-byte limit.
+
+    Telegram measures callback payloads in UTF-8 bytes, not Python
+    characters. Trim by code point until the encoded value is valid and fits;
+    slicing the first 64 characters can still exceed the limit for emoji or
+    non-Latin slugs.
+    """
+    value = str(data or "")
+    while len(value.encode("utf-8")) > 64:
+        value = value[:-1]
+    return value
 
 
 def _safe_url_btn(label: str, url: str) -> InlineKeyboardButton | None:
@@ -30,11 +36,17 @@ def _safe_url_btn(label: str, url: str) -> InlineKeyboardButton | None:
 
 def main_menu(invite_link: str | None = None) -> InlineKeyboardMarkup:
     buttons = [
-        [InlineKeyboardButton("📺 Recent Series", callback_data="rp:1")],
+        [
+            InlineKeyboardButton("📺 Recent Series", callback_data="rp:1"),
+            InlineKeyboardButton("🎬 Movies", callback_data="mp:1"),
+        ],
         [InlineKeyboardButton("📂 Browse Genres", callback_data="m:genres")],
     ]
     if invite_link:
-        buttons.append([InlineKeyboardButton("📢 Join Our Channel", url=invite_link)])
+        safe_link = invite_link if str(invite_link).startswith("https://") else ""
+        if safe_link:
+            buttons.append([InlineKeyboardButton("📢 Join Our Channel", url=safe_link)])
+    buttons.append([_menu_btn()])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -145,7 +157,12 @@ def quality_picker(
     back_cb: str,
     is_movie: bool = False,
 ) -> InlineKeyboardMarkup:
-    """Show quality buttons. Marks available ones with ✅, unavailable with ⚡ (will use closest)."""
+    """Show quality buttons without promising a quality fallback.
+
+    Resolution is verified only after the user selects a button. A missing
+    quality is marked as unavailable; the downloader will try another exact
+    provider, never silently send a lower-resolution file.
+    """
     buttons = []
     prefix = "mdl" if is_movie else "dl"
     ss = short_slug(slug)

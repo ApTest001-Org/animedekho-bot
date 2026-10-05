@@ -5,6 +5,7 @@ import logging
 import re
 from datetime import datetime, timezone
 
+from config.settings import settings
 from motor.motor_asyncio import AsyncIOMotorClient
 
 log = logging.getLogger(__name__)

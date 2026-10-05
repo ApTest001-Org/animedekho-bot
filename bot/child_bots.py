@@ -11,6 +11,7 @@ from bot.telegram import Client, filters, enums
 from bot.telegram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 
 from config.settings import settings
+from bot.auth import is_owner
 
 log = logging.getLogger(__name__)
 

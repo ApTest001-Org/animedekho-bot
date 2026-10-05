@@ -7,8 +7,9 @@ import re
 from config.settings import settings
 
 
-def esc(text: str) -> str:
-    return htmlmod.escape(text)
+def esc(text: str | None) -> str:
+    """Escape a value for Telegram HTML without crashing on missing metadata."""
+    return htmlmod.escape(str(text or ""))
 
 
 def truncate(text: str, maxlen: int = 400) -> str:

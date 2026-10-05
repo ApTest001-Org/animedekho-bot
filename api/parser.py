@@ -41,6 +41,32 @@ RE_TRDEKHO = re.compile(
 RE_PAGE = re.compile(r"/page/(\d+)/")
 
 
+def _decode_server_src(value: str) -> str:
+    """Decode a server ``data-src`` value from common site formats.
+
+    The site has used standard base64, URL-safe base64, and unpadded base64
+    over time. It has also occasionally shipped the destination URL directly.
+    Returning an empty string instead of raising lets one malformed server
+    button be skipped while the remaining mirrors still work.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith(("http://", "https://")):
+        return raw
+
+    import base64
+    padded = raw + "=" * (-len(raw) % 4)
+    for decoder in (base64.urlsafe_b64decode, base64.b64decode):
+        try:
+            decoded = decoder(padded.encode("ascii")).decode("utf-8").strip()
+            if decoded.startswith(("http://", "https://")):
+                return decoded
+        except (ValueError, UnicodeDecodeError, UnicodeEncodeError):
+            continue
+    return ""
+
+
 def parse_nonce(html: str) -> str | None:
     """Extract WP nonce from toronites JS config."""
     m = re.search(r'"nonce"\s*:\s*"([^"]+)"', html)
@@ -215,8 +241,7 @@ def parse_episode_page(html: str, ep_slug: str) -> Episode:
     if trdekho_match:
         post_id = int(trdekho_match.group(2))
 
-    # Extract servers from bx-lst (base64 data-src)
-    import base64
+    # Extract servers from bx-lst (base64 or direct data-src)
     servers = []
     ul = soup.find("ul", class_="bx-lst")
     if ul:
@@ -225,7 +250,9 @@ def parse_episode_page(html: str, ep_slug: str) -> Episode:
             data_src = a.get("data-src", "")
             if data_src:
                 try:
-                    decoded = base64.b64decode(data_src).decode("utf-8")
+                    decoded = _decode_server_src(data_src)
+                    if not decoded:
+                        continue
                     srv_match = RE_TRDEKHO.search(decoded)
                     if srv_match:
                         srv_id = int(srv_match.group(1))
@@ -290,7 +317,6 @@ def parse_movie_page(html: str, slug: str) -> Movie:
         post_id = int(trdekho_match.group(2))
 
     # Extract servers
-    import base64
     servers = []
     ul = soup.find("ul", class_="bx-lst")
     if ul:
@@ -299,7 +325,9 @@ def parse_movie_page(html: str, slug: str) -> Movie:
             data_src = a.get("data-src", "")
             if data_src:
                 try:
-                    decoded = base64.b64decode(data_src).decode("utf-8")
+                    decoded = _decode_server_src(data_src)
+                    if not decoded:
+                        continue
                     srv_match = RE_TRDEKHO.search(decoded)
                     if srv_match:
                         srv_id = int(srv_match.group(1))
@@ -329,14 +357,24 @@ def parse_movie_page(html: str, slug: str) -> Movie:
     )
 
 
-def parse_categories(data: list[dict]) -> list[Category]:
-    """Parse WP REST API categories response."""
+def parse_categories(data: list[dict] | None) -> list[Category]:
+    """Parse WP REST API categories response defensively."""
+    if not isinstance(data, list):
+        return []
+
     cats = []
     for c in data:
-        if c.get("count", 0) > 5:
-            cats.append(Category(
-                id=c["id"], name=c["name"], slug=c["slug"], count=c["count"],
-            ))
+        if not isinstance(c, dict):
+            continue
+        try:
+            count = int(c.get("count", 0) or 0)
+            category_id = int(c.get("id", 0) or 0)
+            name = str(c.get("name", "")).strip()
+            slug = str(c.get("slug", "")).strip()
+        except (TypeError, ValueError):
+            continue
+        if count > 5 and category_id and name and slug:
+            cats.append(Category(id=category_id, name=name, slug=slug, count=count))
     cats.sort(key=lambda x: x.count, reverse=True)
     return cats[:20]
 

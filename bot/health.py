@@ -109,10 +109,12 @@ ring_buffer_handler = RingBufferLogHandler(capacity=150)
 
 
 def setup_health_logging():
-    """Attach the ring buffer handler to the root logger."""
+    """Attach the ring buffer handler to the root logger once."""
     formatter = logging.Formatter("%(message)s")
     ring_buffer_handler.setFormatter(formatter)
-    logging.getLogger().addHandler(ring_buffer_handler)
+    root = logging.getLogger()
+    if ring_buffer_handler not in root.handlers:
+        root.addHandler(ring_buffer_handler)
     log.info("System health logging buffer initialized (capacity: 150)")
 
 
@@ -384,6 +386,7 @@ async def format_health_dashboard(main_client: Client) -> tuple[str, InlineKeybo
 
 async def format_download_errors_view(limit: int = 10) -> tuple[str, InlineKeyboardMarkup]:
     """Build detailed view of logged download failures."""
+    db = _get_db()
     if not db:
         return "⚠️ Database not initialized.", InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="health:back")]])
 
@@ -397,13 +400,14 @@ async def format_download_errors_view(limit: int = 10) -> tuple[str, InlineKeybo
             f"Errors in last 24h: <code>0</code>"
         )
     else:
+        import html as htmlmod
         lines = []
         for i, e in enumerate(errors, 1):
-            ts = e.get("timestamp", "")
-            title = e.get("title", "Unknown Series")
-            q = e.get("quality", "N/A")
-            src = e.get("source", "N/A")
-            err = e.get("error", "Unknown error")
+            ts = htmlmod.escape(str(e.get("timestamp", "")))
+            title = htmlmod.escape(str(e.get("title", "Unknown Series")))
+            q = htmlmod.escape(str(e.get("quality", "N/A")))
+            src = htmlmod.escape(str(e.get("source", "N/A")))
+            err = htmlmod.escape(str(e.get("error", "Unknown error")))
             lines.append(
                 f"<b>{i}. {title}</b> [{q}]\n"
                 f"⏰ <code>{ts}</code> | Source: <code>{src}</code>\n"

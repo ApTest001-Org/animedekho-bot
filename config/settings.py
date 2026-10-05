@@ -58,16 +58,30 @@ except ImportError:
     Config = None
 
 
+def _env_int_list(name: str) -> list[int]:
+    """Parse a space/comma-separated list of Telegram IDs safely."""
+    raw = os.environ.get(name, "")
+    values: list[int] = []
+    for item in raw.replace(",", " ").split():
+        try:
+            values.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
 @dataclass(frozen=True)
 class BotConfig:
     token: str = field(default_factory=lambda: getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", ""))
     api_id: int = field(default_factory=lambda: getattr(Config, "API_ID", None) or int(os.environ.get("API_ID", "0")))
     api_hash: str = field(default_factory=lambda: getattr(Config, "API_HASH", None) or os.environ.get("API_HASH", ""))
     owner_id: int = field(default_factory=lambda: getattr(Config, "OWNER_ID", None) or int(os.environ.get("OWNER_ID", "0")))
+    admin_ids: list[int] = field(default_factory=lambda: list(getattr(Config, "ADMINS", None) or _env_int_list("ADMINS")))
     main_channel: int = field(default_factory=lambda: getattr(Config, "MAIN_CHANNEL", None) or int(os.environ.get("MAIN_CHANNEL", "0")))
     log_channel: int = field(default_factory=lambda: getattr(Config, "LOG_CHANNEL", None) or int(os.environ.get("LOG_CHANNEL", "0")))
     dump_channel: int = field(default_factory=lambda: getattr(Config, "DUMP_CHANNEL", None) or int(os.environ.get("DUMP_CHANNEL", "0")))
     mongo_uri: str = field(default_factory=lambda: getattr(Config, "MONGO_URI", None) or os.environ.get("MONGO_URI", "mongodb://localhost:27017"))
+    database_name: str = field(default_factory=lambda: getattr(Config, "DATABASE_NAME", None) or os.environ.get("DATABASE_NAME", "animedekho_bot"))
     items_per_page: int = 10
     max_search_results: int = 15
     max_genres: int = 20

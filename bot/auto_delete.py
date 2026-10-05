@@ -84,10 +84,16 @@ class AutoDeleteService:
         )
 
     async def _worker_loop(self):
-        """Periodically check and process expired delete jobs."""
-        from bot.database import db
+        """Periodically check and process expired delete jobs.
+
+        Resolve the database on every tick. The worker can be started by a
+        lifecycle hook while the database module is still being replaced (or
+        after a reconnect); importing ``db`` once would freeze a stale None.
+        """
+        import bot.database as database
         while self._running:
             try:
+                db = database.db
                 if db:
                     now = time.time()
                     expired_jobs = await db.get_pending_auto_delete_jobs(before_ts=now)

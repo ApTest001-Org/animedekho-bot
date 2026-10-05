@@ -127,6 +127,13 @@ class HTTPClient:
             self._session = None
             self._cloudscraper = None
 
+    async def _ensure_scraper(self):
+        """Create the Cloudflare scraper for callers outside normal startup."""
+        async with self._lock:
+            if self._cloudscraper is None:
+                self._cloudscraper = cloudscraper.create_scraper()
+            return self._cloudscraper
+
     # ── Internal helpers ───────────────────────────────────────────────
 
     def _cache_key(self, method: str, url: str, **kwargs) -> str:
@@ -180,6 +187,7 @@ class HTTPClient:
 
         # Use cloudscraper for Cloudflare-protected domains
         if self._is_cloudflare_domain(url):
+            await self._ensure_scraper()
             return await self._cloudscraper_request(
                 method, url, headers=headers, data=data,
                 ttl=ttl, no_cache=no_cache, cache_key=cache_key,
@@ -365,7 +373,8 @@ class HTTPClient:
         Returns (final_url, response_text).
         """
         if self._is_cloudflare_domain(url):
-            loop = asyncio.get_event_loop()
+            await self._ensure_scraper()
+            loop = asyncio.get_running_loop()
 
             def _do_get():
                 merged_headers = dict(DEFAULT_HEADERS)
@@ -403,7 +412,8 @@ class HTTPClient:
         """
         if self._is_cloudflare_domain(url):
             # Use cloudscraper (follows redirects automatically)
-            loop = asyncio.get_event_loop()
+            await self._ensure_scraper()
+            loop = asyncio.get_running_loop()
 
             def _do_post():
                 merged_headers = dict(DEFAULT_HEADERS)

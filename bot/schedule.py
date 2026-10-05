@@ -9,7 +9,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any
 import aiohttp
 
-from bot.telegram import enums
+from bot.telegram import Client, enums
 from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 log = logging.getLogger(__name__)
@@ -121,9 +121,12 @@ class ScheduleService:
 
         try:
             from utils.http import http_client
-            # If http_client is available, use it, else aiohttp
-            if hasattr(http_client, "session") and http_client.session:
-                async with http_client.session.post(
+            # Reuse the shared session when the bot is running. HTTPClient
+            # intentionally keeps it private, so use getattr defensively for
+            # lightweight/offline schedule calls before startup.
+            shared_session = getattr(http_client, "_session", None)
+            if shared_session and not shared_session.closed:
+                async with shared_session.post(
                     ANILIST_GRAPHQL_URL,
                     json=payload,
                     headers={"Content-Type": "application/json", "User-Agent": "AnimeDekho/1.0"},

@@ -1,17 +1,74 @@
 """Slash command handlers."""
 
 import asyncio
+import html
 import logging
 import re
 
 from bot.telegram import Client, enums
 from bot.telegram.types import Message
 
+from config.settings import settings
 from bot.keyboards import main_menu
 from bot.auth import require_approved, require_owner
 import bot.logger
 
 log = logging.getLogger(__name__)
+
+_DEFAULT_START_CAPTION = (
+    "Bᴀᴋᴀᴀᴀ!!!.....{mention}\n\n"
+    "<blockquote><b>I AM FILE STORE + AUTO ANIME BOT, I CAN STORE PRIVATE FILES "
+    "IN SPECIFIED CHANNEL AND OTHER USERS CAN ACCESS IT FROM SPECIAL LINK.</b></blockquote>"
+)
+_DEFAULT_START_PICTURE = (
+    "https://images.unsplash.com/photo-1578632767115-351597cf2477"
+    "?w=1000&auto=format&fit=crop"
+)
+
+
+def _safe_channel_url(value: str | None) -> str:
+    """Return a Telegram-compatible HTTPS URL for a configured channel."""
+    raw = str(value or "").strip()
+    if raw.startswith("https://t.me/") or raw.startswith("https://telegram.me/"):
+        return raw
+    if raw.startswith("@") and len(raw) > 1:
+        return f"https://t.me/{raw[1:]}"
+    return "https://t.me/animedekho"
+
+
+def _user_mention(user, user_id: int) -> str:
+    """Build an HTML-safe mention even when Telegram omits first_name."""
+    first_name = str(getattr(user, "first_name", None) or "Friend").strip() or "Friend"
+    safe_name = html.escape(first_name)
+    return f"<a href='tg://user?id={user_id}'>{safe_name}</a>" if user_id else safe_name
+
+
+def _start_caption(user, user_id: int, custom_message: str | None = None) -> str:
+    mention = _user_mention(user, user_id)
+    template = str(custom_message or _DEFAULT_START_CAPTION)
+    # Deliberately replace only the documented placeholder. Using format() here
+    # would interpret braces in a user's HTML message as formatting fields.
+    return template.replace("{mention}", mention)
+
+
+def _modern_start_markup(main_channel: str):
+    from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("• ⚡ MAIN CHANNEL • ↗", url=_safe_channel_url(main_channel))],
+        [
+            InlineKeyboardButton("📺 SERIES", callback_data="rp:1"),
+            InlineKeyboardButton("🎬 MOVIES", callback_data="mp:1"),
+        ],
+        [
+            InlineKeyboardButton("📂 GENRES", callback_data="m:genres"),
+            InlineKeyboardButton("🔎 SEARCH", callback_data="start:search"),
+        ],
+        [
+            InlineKeyboardButton("• ABOUT •", callback_data="start:about"),
+            InlineKeyboardButton("HELP •", callback_data="start:help"),
+        ],
+    ])
 
 
 async def cmd_start(client: Client, message: Message):
@@ -49,27 +106,16 @@ async def cmd_start(client: Client, message: Message):
     start_style = await db.get_start_style() if db else "modern"
 
     if start_style == "modern":
-        from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
-        first_name = user.first_name if user else "Friend"
-        user_mention = f"<a href='tg://user?id={user_id}'>{re.sub(r'[<>&]', '', first_name)}</a>" if user_id else (first_name or "Friend")
+        main_chan = await db.get_config("main_channel_link") if db else None
+        main_chan = main_chan or invite_link or settings.bot.network_channel_link
+        custom_message = await db.get_start_msg() if db else None
+        caption = _start_caption(user, user_id, custom_message)
+        modern_markup = _modern_start_markup(main_chan)
 
-        main_chan = await db.get_config("main_channel_link") or invite_link or "https://t.me/animedekho"
-        modern_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("• ⚡ MAIN CHANNEL • ↗", url=main_chan)],
-            [
-                InlineKeyboardButton("• ABOUT •", callback_data="start:about"),
-                InlineKeyboardButton("HELP •", callback_data="start:help"),
-            ]
-        ])
-
-        caption = (
-            f"Bᴀᴋᴀᴀᴀ!!!.....{user_mention}\n\n"
-            f"<blockquote><b>I AM FILE STORE + AUTO ANIME BOT, I CAN STORE PRIVATE FILES IN SPECIFIED CHANNEL AND OTHER USERS CAN ACCESS IT FROM SPECIAL LINK.</b></blockquote>"
-        )
-
+        # Default stylish banner fallback if the owner has not set a custom
+        # start picture. A failed remote image must never block /start.
         start_pic = await db.get_start_pic() if db else None
-        # Default stylish banner fallback if user has not set a custom start picture
-        pic_to_send = start_pic or "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=1000&auto=format&fit=crop"
+        pic_to_send = start_pic or _DEFAULT_START_PICTURE
 
         try:
             await message.reply_photo(
@@ -114,7 +160,15 @@ async def start_callback(client: Client, query):
     from bot.database import db
     from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-    if data == "start:about":
+    if data == "start:search":
+        text = (
+            "🔎 <b>SEARCH ANIME</b>\n\n"
+            "Use <code>/search anime name</code> or simply type an anime title "
+            "in this chat.\n\n"
+            "Example: <code>/search Naruto</code>"
+        )
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀ Back", callback_data="start:home")]])
+    elif data == "start:about":
         text = (
             "✨ <b>ABOUT ANIME DEKHO BOT</b> ✨\n\n"
             "<blockquote><b>🤖 Name:</b> AnimeDekho Bot\n"
@@ -140,10 +194,10 @@ async def start_callback(client: Client, query):
             "<b>Admin / Owner Commands:</b>\n"
             "• /automonitor — Toggle automated episode downloader\n"
             "• /mapchannel — Route anime uploads to dedicated channel\n"
-            "• /startstyle — Switch /start UI (classic / modern)\n"
-            "• /schedstyle — Switch /schedule UI (classic / modern)\n"
-            "• /epstyle — Switch episode upload post UI (classic / modern)\n"
-            "• /poststyle — Switch channel album card UI (classic / modern)\n"
+            "• /startstyle — View /start UI status (modern)\n"
+            "• /schedstyle — View /schedule UI status (modern)\n"
+            "• /epstyle — View episode post UI status (modern)\n"
+            "• /poststyle — View channel card UI status (modern)\n"
             "• /setthumb — Configure custom thumbnails\n"
             "• /setdump — Configure dump storage channel</blockquote>\n\n"
             "<i>Click below to return to the main menu.</i>"
@@ -152,24 +206,14 @@ async def start_callback(client: Client, query):
     else:  # start:home
         user = query.from_user
         user_id = user.id if user else 0
-        first_name = user.first_name if user else "Friend"
-        user_mention = f"<a href='tg://user?id={user_id}'>{re.sub(r'[<>&]', '', first_name)}</a>" if user_id else (first_name or "Friend")
         invite_link = await db.get_config("channel_invite_link") if db else None
-        main_chan = (await db.get_config("main_channel_link") if db else None) or invite_link or "https://t.me/animedekho"
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("• ⚡ MAIN CHANNEL • ↗", url=main_chan)],
-            [
-                InlineKeyboardButton("• ABOUT •", callback_data="start:about"),
-                InlineKeyboardButton("HELP •", callback_data="start:help"),
-            ]
-        ])
-        text = (
-            f"Bᴀᴋᴀᴀᴀ!!!.....{user_mention}\n\n"
-            f"<blockquote><b>I AM FILE STORE + AUTO ANIME BOT, I CAN STORE PRIVATE FILES IN SPECIFIED CHANNEL AND OTHER USERS CAN ACCESS IT FROM SPECIAL LINK.</b></blockquote>"
-        )
+        main_chan = (await db.get_config("main_channel_link") if db else None) or invite_link or settings.bot.network_channel_link
+        custom_message = await db.get_start_msg() if db else None
+        markup = _modern_start_markup(main_chan)
+        text = _start_caption(user, user_id, custom_message)
 
     try:
-        if query.message.photo:
+        if getattr(query.message, "photo", None):
             await query.message.edit_caption(caption=text, parse_mode=enums.ParseMode.HTML, reply_markup=markup)
         else:
             await query.message.edit_text(text=text, parse_mode=enums.ParseMode.HTML, reply_markup=markup)
@@ -181,7 +225,13 @@ async def start_callback(client: Client, query):
 
 @require_approved
 async def cmd_help(client: Client, message: Message):
-    is_owner_user = message.from_user and message.from_user.id == settings.bot.owner_id
+    is_owner_user = bool(
+        message.from_user
+        and (
+            message.from_user.id == settings.bot.owner_id
+            or message.from_user.id in settings.bot.admin_ids
+        )
+    )
     owner_help = (
         "\n\n<b>Owner & Admin Commands:</b>\n"
         "• <b>/settings</b> — Interactive control panel & live toggles\n"

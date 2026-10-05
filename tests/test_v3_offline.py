@@ -8,7 +8,14 @@ M3U8 exact-only (logic), health-probe fastest selection, audit claims.
 """
 
 import asyncio
+import pathlib
 import sys
+
+# Keep the documented ``python tests/test_v3_offline.py`` command working
+# when Python puts tests/ (rather than the repository root) on sys.path.
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def check(name, cond, detail=""):
@@ -27,7 +34,7 @@ def main() -> int:
     _sanitize_upsert(s, i)
     ok &= check("V3#1 sanitizer strips overlap", "series_title" not in i and s["series_title"] == "X")
     # full-repo audit: no overlapping keys in any update_one upsert definition
-    import pathlib, re
+    import re
     overlap_found = []
     for fn in ["bot/database.py"]:
         text = pathlib.Path(fn).read_text()

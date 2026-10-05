@@ -12,7 +12,7 @@ from bot.telegram import Client, errors
 from bot.telegram.types import ChatPrivileges, User
 
 from config.settings import settings
-from bot.database import db
+import bot.database as database
 
 log = logging.getLogger(__name__)
 
@@ -38,11 +38,11 @@ class UserbotManager:
             if self.is_active and self.client and self.client.is_connected:
                 return True
 
-            if not db:
+            if not database.db:
                 log.warning("Database not initialized, cannot start userbot")
                 return False
 
-            session_data = await db.get_userbot_session()
+            session_data = await database.db.get_userbot_session()
             if not session_data or not session_data.get("session_string"):
                 log.info("No userbot session configured")
                 return False
@@ -115,7 +115,6 @@ class UserbotManager:
         try:
             await temp_client.start()
             me = await temp_client.get_me()
-            await temp_client.stop()
 
             user_meta = {
                 "id": me.id,
@@ -125,8 +124,8 @@ class UserbotManager:
                 "phone_number": getattr(me, "phone_number", ""),
             }
 
-            if db:
-                await db.save_userbot_session(clean_session, user_meta)
+            if database.db:
+                await database.db.save_userbot_session(clean_session, user_meta)
 
             await self.stop()
             started = await self.start()
@@ -142,6 +141,14 @@ class UserbotManager:
         except Exception as e:
             log.warning("Direct session login failed: %s", e)
             return False, f"Invalid or expired string session: {e}", {}
+        finally:
+            # A failed get_me/save must not leave a temporary MTProto client
+            # connected in the background.
+            try:
+                if temp_client.is_connected:
+                    await temp_client.stop()
+            except Exception:
+                pass
 
     async def start_interactive_login(self, user_id: int) -> str:
         """Begin interactive step-by-step phone login."""
@@ -284,8 +291,8 @@ class UserbotManager:
                 "phone_number": getattr(me, "phone_number", ""),
             }
 
-            if db:
-                await db.save_userbot_session(session_str, user_meta)
+            if database.db:
+                await database.db.save_userbot_session(session_str, user_meta)
 
             self._login_states.pop(user_id, None)
 
@@ -310,8 +317,8 @@ class UserbotManager:
     async def logout(self) -> bool:
         """Logout userbot and clear saved session."""
         await self.stop()
-        if db:
-            await db.delete_userbot_session()
+        if database.db:
+            await database.db.delete_userbot_session()
         return True
 
     def get_status(self) -> dict[str, Any]:
@@ -372,11 +379,11 @@ class UserbotManager:
         - Creates a permanent invite link
         - Stores the mapping in MongoDB
         """
-        if not db:
+        if not database.db:
             raise RuntimeError("Database not available")
 
         # Check existing mapping first
-        existing = await db.get_channel_mapping(series_slug)
+        existing = await database.db.get_channel_mapping(series_slug)
         if existing and existing.get("channel_id"):
             log.info("Series %s already mapped to channel %s", series_slug, existing["channel_id"])
             return existing
@@ -490,7 +497,7 @@ class UserbotManager:
             invite_link = f"https://t.me/c/{abs(channel_id) % (10**10)}/1"
 
         # 4. Save mapping in database
-        mapping = await db.set_channel_mapping(
+        mapping = await database.db.set_channel_mapping(
             series_slug=series_slug,
             channel_id=channel_id,
             invite_link=invite_link,

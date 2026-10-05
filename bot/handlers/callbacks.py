@@ -599,6 +599,11 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
             log.warning("ToonFlix resolution error: %s", e)
             diag_steps.append(f"ToonFlix: error {str(e)[:80]}")
 
+    # Enforce the same exact-quality contract for candidates returned by
+    # fallback extractors. Some providers return a valid URL at a different
+    # resolution; delivering it would make a 1080p button silently send 720p.
+    candidates = _filter_quality_candidates(candidates, quality_pref)
+
     if not candidates:
         if not download_job_manager.is_job_cancelled(job_id):
             # V2 #14: detailed diagnostic instead of generic failure.
@@ -702,12 +707,25 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
 
     data = _get_servers(chat_id, f"movie:{movie_slug}")
     if not data:
-        movie = await api.get_movie(movie_slug)
-        _store_servers(chat_id, f"movie:{movie_slug}", movie.servers, movie.title)
-        data = _get_servers(chat_id, f"movie:{movie_slug}")
+        try:
+            movie = await api.get_movie(movie_slug)
+            _store_servers(chat_id, f"movie:{movie_slug}", movie.servers, movie.title, poster_url=movie.poster or "")
+            data = _get_servers(chat_id, f"movie:{movie_slug}")
+        except Exception as e:
+            # The direct-source resolvers can still find a movie when the
+            # AnimeDekho detail page is blocked. Keep the callback alive and
+            # let that fallback tier run instead of showing a generic error.
+            log.warning("Movie detail unavailable during download for '%s': %s", movie_slug, e)
+            data = {
+                "servers": [],
+                "title": slug_to_title(movie_slug),
+                "poster_url": _poster_cache.get(movie_slug, ""),
+            }
 
-    if not data or not data["servers"]:
-        await _safe_edit(q, "⚠️ No servers found. Please go back and try again.")
+    # An empty AnimeDekho server list is valid: MultiSource/AnimeDrive/
+    # ToonFlix below are intentionally able to resolve direct movie sources.
+    if not data:
+        await _safe_edit(q, "⚠️ No downloadable sources found. Please try again later.")
         return
 
     title = data.get("title", slug_to_title(movie_slug))
@@ -868,6 +886,8 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
                         candidates.append((tf_srv, tf_srv.qualities[0]))
             except Exception as e:
                 log.warning("ToonFlix movie resolution error: %s", e)
+
+    candidates = _filter_quality_candidates(candidates, quality_pref)
 
     if not candidates:
         if not download_job_manager.is_job_cancelled(job_id):
@@ -1891,6 +1911,34 @@ def _pick_quality(srv, quality_idx: int):
     if srv.direct_url:
         return Quality(resolution="auto", url=srv.direct_url)
     return None
+
+
+def _filter_quality_candidates(
+    candidates: list[tuple[VideoServer, Quality]],
+    quality_pref: str,
+) -> list[tuple[VideoServer, Quality]]:
+    """Keep exact-quality candidates and defer only genuinely unknown ones.
+
+    Direct extractors may return a URL with a known but different resolution.
+    Those links are never valid fallbacks. Unknown labels remain eligible only
+    when no exact link exists because the downloader's ffprobe validation is
+    the final authority for that source.
+    """
+    from utils.anime_match import normalize_quality
+
+    want = normalize_quality(quality_pref)
+    if want == "auto":
+        return candidates
+
+    exact: list[tuple[VideoServer, Quality]] = []
+    unknown: list[tuple[VideoServer, Quality]] = []
+    for server, quality in candidates:
+        got = normalize_quality(getattr(quality, "resolution", ""))
+        if got == want:
+            exact.append((server, quality))
+        elif got == "Unknown":
+            unknown.append((server, quality))
+    return exact or unknown
 
 
 def _find_quality_candidates(servers: list, quality_pref: str) -> list[tuple[VideoServer, Quality]]:
