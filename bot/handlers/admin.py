@@ -1011,7 +1011,15 @@ async def cmd_health(client: Client, message: Message):
     else:
         status_msg = await message.reply_text("🩺 Checking all bot connections and system metrics...")
         text, markup = await format_health_dashboard(client)
-        await status_msg.edit_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=markup)
+        try:
+            await status_msg.edit_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=markup)
+        except Exception:
+            # Send/edit race (message not yet visible server-side) — never
+            # leave the user with no dashboard; fall back to a fresh reply.
+            try:
+                await message.reply_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=markup)
+            except Exception:
+                pass
 
 
 @require_owner

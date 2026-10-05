@@ -338,6 +338,26 @@ async def _resolve_toonworld_url(
     media_links: list[dict] = []
     archive_urls: list[str] = []
     seen: set[str] = set()
+    # Live-discovered budget: a season page can list 30+ episode/zip links;
+    # resolving every one sequentially takes minutes. Bound bypass attempts
+    # and prefer links matching the parsed episode.
+    budget = {"n": 6}
+
+    async def _bounded_bypass(href: str) -> str | None:
+        if budget["n"] <= 0:
+            return None
+        budget["n"] -= 1
+        try:
+            return await detect_and_bypass(href)
+        except Exception:
+            return None
+
+    def _ep_priority(href: str, label: str) -> int:
+        if episode is not None and re.search(rf"{season}x0*{episode}\b", f"{href} {label}", re.I):
+            return 0
+        if "/zip/" in href.lower():
+            return 2  # batch archives last; skipped below unless nothing else
+        return 1
 
     async def _refetch_and_extract(target: str, depth: int = 0) -> None:
         if depth > 2:
@@ -346,17 +366,21 @@ async def _resolve_toonworld_url(
         if not page_html or len(page_html) < 300 or _is_challenge_html(page_html):
             return
         soup = BeautifulSoup(page_html, "html.parser")
+        links: list[tuple[str, str]] = []
         for a in soup.find_all("a", href=True):
-            href = (a["href"] or "").strip()
+            links.append(((a["href"] or "").strip(), a.get_text(" ", strip=True)[:200]))
+        links.sort(key=lambda hl: _ep_priority(hl[0], hl[1]))
+        for href, label in links:
             if not href.startswith("http"):
                 continue
-            label = a.get_text(" ", strip=True)[:200]
             if _is_navigation_url(href, label):
                 continue
+            if "/zip/" in href.lower():
+                continue  # batch-archive pages: not episode files, skip fast
             dest = href
             # Follow nested archive/redirect one more hop, then refetch.
             if "archive.toonworld4all" in href.lower() or "redirect" in href.lower() or is_shortener(href):
-                nxt = await detect_and_bypass(href)
+                nxt = await _bounded_bypass(href)
                 if nxt and nxt != href:
                     # If bypass lands on another HTML page, refetch it.
                     if not is_valid_media_destination(nxt) and nxt.startswith("http") \
@@ -409,15 +433,19 @@ async def _resolve_toonworld_url(
     # Also scan the original page HTML for direct episode links.
     if not media_links and not archive_urls and html:
         soup0 = BeautifulSoup(html, "html.parser")
+        links0: list[tuple[str, str]] = []
         for a in soup0.find_all("a", href=True):
-            href = (a["href"] or "").strip()
+            links0.append(((a["href"] or "").strip(), a.get_text(" ", strip=True)[:200]))
+        links0.sort(key=lambda hl: _ep_priority(hl[0], hl[1]))
+        for href, label in links0:
             if not href.startswith("http"):
                 continue
-            label = a.get_text(" ", strip=True)[:200]
             if _is_navigation_url(href, label):
                 continue
+            if "/zip/" in href.lower():
+                continue
             if "archive.toonworld4all" in href.lower() or "redirect" in href.lower() or is_shortener(href):
-                dest = await detect_and_bypass(href)
+                dest = await _bounded_bypass(href)
                 if dest and dest != href and dest not in seen:
                     seen.add(dest)
                     if re.search(r"\.(zip|rar|7z)(\?|#|$)", dest.lower()):

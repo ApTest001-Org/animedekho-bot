@@ -42,6 +42,9 @@ DEFAULT_HEADERS = {
 
 # Domains that need cloudscraper (Cloudflare-protected)
 # V2 #7: animedekho.tv is the live domain (.app 301-redirects to it).
+# V3 #9/#11: bypass-site hosts are Cloudflare-fronted and return 403 to
+# plain aiohttp from datacenter IPs — route them via cloudscraper (which
+# succeeds from here) instead of reporting honest fetch failures.
 _CLOUDFLARE_DOMAINS = (
     "animedekho.tv",
     "animedekho.app",
@@ -51,6 +54,14 @@ _CLOUDFLARE_DOMAINS = (
     "toonflix.in",
     "drive.toonflix.in",
     "files.toonflix.in",
+    "animedubhindi.link",
+    "adhlinks.com",
+    "toonworld4all.me",
+    "archive.toonworld4all.me",
+    "toonanime.",
+    "rareanimes.",
+    "deadtoons.",
+    "toono.app",
 )
 
 
