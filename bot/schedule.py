@@ -366,7 +366,7 @@ class AutoScheduleService:
             )
 
             schedules = await schedule_service.get_today_schedule()
-            sched_style = await db.get_sched_style() if db else "classic"
+            sched_style = await db.get_sched_style() if db else "modern"
 
             if sched_style == "modern":
                 text, total_pages = _format_modern_schedule_text(schedules, "today", 1)

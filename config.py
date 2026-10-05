@@ -67,6 +67,12 @@ class Config:
     if FSUB_CHANNEL and str(FSUB_CHANNEL).lstrip("-").isdigit():
         FSUB_CHANNEL = int(FSUB_CHANNEL)
 
+    # V3 #15: quality-button worker routing fallback.
+    # True (default) = when no active worker exists for a quality, fall back
+    # to the main bot explicitly (logged, never silent). False = keep the
+    # worker-only deep-link (delivery may fail until a worker is added).
+    QUALITY_BUTTON_FALLBACK_TO_MAIN = os.environ.get("QUALITY_BUTTON_FALLBACK_TO_MAIN", "1") == "1"
+
     # Main / Network Channel Link (used for DOWNLOAD NETWORK button)
     NETWORK_CHANNEL_LINK = os.environ.get("NETWORK_CHANNEL_LINK", "https://t.me/animedekho")
 

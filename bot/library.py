@@ -76,6 +76,48 @@ class LibraryManager:
         self.channel = main_channel
         self.bot_username = bot_username
 
+    def _target_channel(self, mapping: dict | None) -> int:
+        """V3 #14: album create/edit/update/delete always target
+        mapping.channel_id when mapped, else the main channel.
+
+        mapping.channel_id → target_channel_id → album op (same target).
+        """
+        try:
+            cid = (mapping or {}).get("channel_id")
+            if cid:
+                return int(cid)
+        except Exception:
+            pass
+        return self.channel
+
+    def _bot_username_for_quality(self, quality: str) -> str:
+        """V3 #15: per-quality worker bot username via
+        ChildBotManager.get_bot_for_quality(). Falls back to the main bot
+        ONLY when explicitly allowed (Config.QUALITY_BUTTON_FALLBACK_TO_MAIN,
+        default True) — and never silently (warning is logged)."""
+        q = (quality or "").strip() or "auto"
+        try:
+            from bot.child_bots import child_bot_manager
+            mgr = child_bot_manager
+            if mgr:
+                worker = mgr.get_bot_for_quality(q)
+                if worker:
+                    return worker.lstrip("@")
+        except Exception as e:
+            log.debug("Worker lookup failed for quality %s: %s", q, e)
+        try:
+            from config import Config
+            allow_fallback = bool(getattr(Config, "QUALITY_BUTTON_FALLBACK_TO_MAIN", True))
+        except Exception:
+            allow_fallback = True
+        if allow_fallback:
+            log.warning("V3 #15: no active worker for quality %s — explicit fallback to main bot @%s",
+                        q, self.bot_username)
+            return self.bot_username
+        log.warning("V3 #15: no active worker for quality %s and fallback disabled — using main bot (button kept, delivery may fail)",
+                    q)
+        return self.bot_username
+
     async def save_to_library(
         self,
         series_slug: str,
@@ -137,7 +179,7 @@ class LibraryManager:
             q_param = quality or "720p"
             from utils.helpers import encode_file_param
             sec_param = encode_file_param(f"get_{series_slug}_{q_param}_{episode_key}")
-            file_link = f"https://t.me/{self.bot_username}?start={sec_param}"
+            file_link = f"https://t.me/{self._bot_username_for_quality(q_param)}?start={sec_param}"
 
             reply_text = (
                 f"<b>{series_title}</b>\n"
@@ -147,20 +189,21 @@ class LibraryManager:
 
             # Build action buttons for notification
             mapping = await self.db.get_channel_mapping(series_slug, title=series_title) if self.db else None
+            target_channel_id = self._target_channel(mapping)  # V3 #14
             if mapping and mapping.get("channel_id"):
                 sec_join = encode_file_param(f"join_{series_slug}")
-                join_link = f"https://t.me/{self.bot_username}?start={sec_join}"
+                join_link = f"https://t.me/{self._bot_username_for_quality(q_param)}?start={sec_join}"
                 notif_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Open Channel", url=join_link)]])
             else:
                 sec_join = encode_file_param(f"get_{series_slug}_{q_param}_{episode_key}")
-                join_link = f"https://t.me/{self.bot_username}?start={sec_join}"
+                join_link = f"https://t.me/{self._bot_username_for_quality(q_param)}?start={sec_join}"
                 notif_markup = InlineKeyboardMarkup([[InlineKeyboardButton("⚡ Get Episode", url=join_link)]])
 
-            # Send as reply in main channel
-            if target_message_id and self.channel:
+            # Send as reply in the mapped anime channel (V3 #14), not main.
+            if target_message_id and target_channel_id:
                 try:
                     await self.client.send_message(
-                        chat_id=self.channel,
+                        chat_id=target_channel_id,
                         text=reply_text,
                         reply_to_message_id=target_message_id,
                         parse_mode=enums.ParseMode.HTML,
@@ -248,6 +291,7 @@ class LibraryManager:
 
         # Get channel mapping (with movie parent anime routing), album mode, and post style
         mapping = await self.db.get_channel_mapping(series_slug, is_movie=is_movie, title=series_title)
+        target_channel_id = self._target_channel(mapping)  # V3 #14: mapped anime channel wins
         if not mapping or not mapping.get("channel_id"):
             log.info("Main channel post for '%s': private channel not mapped, posting with direct deep-links", series_slug)
             from config import Config
@@ -289,7 +333,7 @@ class LibraryManager:
             target_msg_id = msg_id
             if not entry.get("has_poster") and poster_url:
                 try:
-                    await self.client.delete_messages(self.channel, msg_id)
+                    await self.client.delete_messages(target_channel_id, msg_id)
                 except Exception:
                     pass
                 entry = None
@@ -297,7 +341,7 @@ class LibraryManager:
                 try:
                     if entry.get("has_poster"):
                         await self.client.edit_message_caption(
-                            chat_id=self.channel,
+                            chat_id=target_channel_id,
                             message_id=msg_id,
                             caption=caption[:CAPTION_LIMIT],
                             parse_mode=enums.ParseMode.HTML,
@@ -305,7 +349,7 @@ class LibraryManager:
                         )
                     else:
                         await self.client.edit_message_text(
-                            chat_id=self.channel,
+                            chat_id=target_channel_id,
                             message_id=msg_id,
                             text=caption[:CAPTION_LIMIT],
                             parse_mode=enums.ParseMode.HTML,
@@ -339,7 +383,7 @@ class LibraryManager:
                 except Exception as e:
                     log.warning("Failed to update album message %d, recreating: %s", msg_id, e)
                     try:
-                        await self.client.delete_messages(self.channel, msg_id)
+                        await self.client.delete_messages(target_channel_id, msg_id)
                     except Exception:
                         pass
 
@@ -388,7 +432,7 @@ class LibraryManager:
 
                 try:
                     msg = await self.client.send_photo(
-                        chat_id=self.channel,
+                        chat_id=target_channel_id,
                         photo=display_photo,
                         caption=caption[:CAPTION_LIMIT],
                         parse_mode=enums.ParseMode.HTML,
@@ -398,7 +442,7 @@ class LibraryManager:
                 except Exception as e:
                     log.warning("Failed to send poster photo, sending text: %s", e)
                     msg = await self.client.send_message(
-                        chat_id=self.channel,
+                        chat_id=target_channel_id,
                         text=caption[:CAPTION_LIMIT],
                         parse_mode=enums.ParseMode.HTML,
                         disable_web_page_preview=True,
@@ -414,7 +458,7 @@ class LibraryManager:
                         pass
             else:
                 msg = await self.client.send_message(
-                    chat_id=self.channel,
+                    chat_id=target_channel_id,
                     text=caption[:CAPTION_LIMIT],
                     parse_mode=enums.ParseMode.HTML,
                     disable_web_page_preview=True,
@@ -490,6 +534,7 @@ class LibraryManager:
             poster_url = await resolve_best_poster(series_title, poster_url, is_movie=is_movie)
 
             mapping = await self.db.get_channel_mapping(series_slug, is_movie=is_movie, title=series_title)
+            target_channel_id = self._target_channel(mapping)  # V3 #14
             if not mapping or not mapping.get("channel_id"):
                 log.warning("Skipping album update for '%s': private channel is not mapped", series_slug)
                 return
@@ -515,7 +560,7 @@ class LibraryManager:
                 try:
                     if entry.get("has_poster"):
                         await self.client.edit_message_caption(
-                            chat_id=self.channel,
+                            chat_id=target_channel_id,
                             message_id=msg_id,
                             caption=caption[:CAPTION_LIMIT],
                             parse_mode=enums.ParseMode.HTML,
@@ -529,7 +574,7 @@ class LibraryManager:
                             try:
                                 from bot.telegram.types import InputMediaPhoto
                                 await self.client.edit_message_media(
-                                    chat_id=self.channel,
+                                    chat_id=target_channel_id,
                                     message_id=msg_id,
                                     media=InputMediaPhoto(poster_path, caption=caption[:CAPTION_LIMIT], parse_mode=enums.ParseMode.HTML),
                                     reply_markup=markup,
@@ -542,7 +587,7 @@ class LibraryManager:
                                     pass
                         else:
                             await self.client.edit_message_text(
-                                chat_id=self.channel,
+                                chat_id=target_channel_id,
                                 message_id=msg_id,
                                 text=caption[:CAPTION_LIMIT],
                                 parse_mode=enums.ParseMode.HTML,
@@ -581,7 +626,7 @@ class LibraryManager:
                     if poster_path:
                         try:
                             msg = await self.client.send_photo(
-                                chat_id=self.channel,
+                                chat_id=target_channel_id,
                                 photo=poster_path,
                                 caption=caption[:CAPTION_LIMIT],
                                 parse_mode=enums.ParseMode.HTML,
@@ -595,7 +640,7 @@ class LibraryManager:
                                 pass
                     else:
                         msg = await self.client.send_message(
-                            chat_id=self.channel,
+                            chat_id=target_channel_id,
                             text=caption[:CAPTION_LIMIT],
                             parse_mode=enums.ParseMode.HTML,
                             disable_web_page_preview=True,
@@ -721,6 +766,8 @@ class LibraryManager:
         Build inline buttons for library album post per Issue #20 (Points 31 & 33).
         Only available qualities as buttons linking directly to secure deep-links:
         [ 480p ] [ 720p ] [ 1080p ]
+        V3 #15: each quality deep-link targets its active worker bot
+        (ChildBotManager.get_bot_for_quality), not the main bot.
         """
         from utils.helpers import encode_file_param
         buttons = []
@@ -728,7 +775,7 @@ class LibraryManager:
         for q in qualities:
             ep_key = "movie" if is_movie else "all"
             sec_param = encode_file_param(f"get_{series_slug}_{q}_{ep_key}")
-            deep_link = f"https://t.me/{self.bot_username}?start={sec_param}"
+            deep_link = f"https://t.me/{self._bot_username_for_quality(q)}?start={sec_param}"
             row.append(InlineKeyboardButton(q, url=deep_link))
             if len(row) == 3:
                 buttons.append(row)
@@ -750,11 +797,13 @@ class LibraryManager:
         return entry.get("file_id") if entry else None
 
     async def delete_album(self, series_slug: str):
-        """Delete the album message for a series from the channel."""
+        """Delete the album message for a series from the channel (V3 #14: mapped channel)."""
         entry = await self.db.library.find_one({"series_slug": series_slug, "type": "album"})
         if entry and entry.get("message_id"):
             try:
-                await self.client.delete_messages(self.channel, entry["message_id"])
+                _map = await self.db.get_channel_mapping(series_slug) if self.db else None
+                _tgt = self._target_channel(_map)
+                await self.client.delete_messages(_tgt, entry["message_id"])
             except Exception as e:
                 log.warning("Could not delete album message: %s", e)
         await self.db.library.delete_many({"series_slug": series_slug})
@@ -795,6 +844,7 @@ class LibraryManager:
                 sorted_qualities = _sort_qualities(all_qualities)
                 is_movie = bool(a.get("is_movie", False) or "movie" in slug.lower())
                 mapping = await self.db.get_channel_mapping(slug, is_movie=is_movie, title=a.get("series_title", ""))
+                target_channel_id = self._target_channel(mapping)  # V3 #14
                 album_mode = await self.db.get_config("album_mode", default="channel")
                 post_style = await self.db.get_post_style()
 
@@ -813,7 +863,7 @@ class LibraryManager:
 
                 if a.get("has_poster"):
                     await self.client.edit_message_caption(
-                        chat_id=self.channel,
+                        chat_id=target_channel_id,
                         message_id=msg_id,
                         caption=caption[:CAPTION_LIMIT],
                         parse_mode=enums.ParseMode.HTML,
@@ -821,7 +871,7 @@ class LibraryManager:
                     )
                 else:
                     await self.client.edit_message_text(
-                        chat_id=self.channel,
+                        chat_id=target_channel_id,
                         message_id=msg_id,
                         text=caption[:CAPTION_LIMIT],
                         parse_mode=enums.ParseMode.HTML,

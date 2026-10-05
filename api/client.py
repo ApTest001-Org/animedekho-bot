@@ -176,10 +176,11 @@ class AnimeDekhoAPI:
     # ── Detail pages ──────────────────────────────────────────────
 
     async def _fetch_with_domain_fallback(self, path: str) -> str:
-        """V2 #7-#10: try live .tv domain first, fall back to legacy .app.
+        """V2 #7-#10 + V3 #9: try live .tv domain first, fall back to legacy .app.
 
         Raises the last error if both fail so callers can use the
-        multi-source fallback instead of showing a bare 403.
+        multi-source fallback instead of showing a bare 403. A 403 is never
+        treated as success — it is logged distinctly with full diagnostics.
         """
         urls = [f"{cfg.base_url}{path}"]
         fallback_base = getattr(cfg, "fallback_base_url", "")
@@ -191,7 +192,13 @@ class AnimeDekhoAPI:
                 return await http_client.get(u)
             except Exception as e:
                 last_err = e
-                log.warning("AnimeDekho fetch failed for %s (%s), trying next domain...", u, e)
+                msg = str(e)
+                is_403 = "403" in msg or "forbidden" in msg.lower()
+                # V3 #9: exact failure diagnostics — 403 must surface, never
+                # silently succeed. Direct sources remain first; this raise
+                # lets the caller fall back to MultiSource/AnimeDrive/ToonFlix.
+                log.warning("AnimeDekho fetch %s for %s (%s), trying next domain...",
+                            "403 Forbidden" if is_403 else "failed", u, e)
                 continue
         raise last_err or RuntimeError(f"AnimeDekho fetch failed for {path}")
 

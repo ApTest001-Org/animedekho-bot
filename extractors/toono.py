@@ -131,7 +131,18 @@ class ToonoExtractor:
         if not search_results:
             return None
 
-        target_series = search_results[0]
+        # V3 #5: never blindly take search_results[0] — rank by confident
+        # title match + strict season agreement, reject on weak match.
+        from utils.anime_match import is_confident_match, matches_season
+        ranked = [
+            r for r in search_results
+            if is_confident_match(anime_title, r.get("title", ""), r.get("url", ""))
+            and matches_season(r.get("title", ""), r.get("url", ""), season)
+        ]
+        if not ranked:
+            log.info("TOONo: no confident S%d match for '%s' — rejecting", season, anime_title)
+            return None
+        target_series = ranked[0]
         series_url = target_series["url"]
 
         try:
@@ -171,14 +182,20 @@ class ToonoExtractor:
                             player_url = inner_ifr["src"]
                             return {
                                 "url": player_url,
-                                "quality": quality_pref,
+                                "quality": "Unknown",
+                                "requested_quality": quality_pref,
+                                "detected_quality": "Unknown",
+                                "verified_quality": "Unknown",
                                 "source": "TOONo",
                                 "poster": target_series.get("poster"),
                             }
                 elif "embed" in src or "player" in src:
                     return {
                         "url": src,
-                        "quality": quality_pref,
+                        "quality": "Unknown",
+                        "requested_quality": quality_pref,
+                        "detected_quality": "Unknown",
+                        "verified_quality": "Unknown",
                         "source": "TOONo",
                         "poster": target_series.get("poster"),
                     }

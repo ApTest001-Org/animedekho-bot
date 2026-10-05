@@ -1408,69 +1408,41 @@ async def cmd_automonitor(client: Client, message: Message):
         await message.reply_text("Usage: <code>/automonitor &lt;on|off|status|interval|quality|add|del|list|check&gt;</code>", parse_mode=enums.ParseMode.HTML)
 
 
-# ── Post Style Configuration (Point 6) ───────────────────────────────
+# ── Post Style Configuration (V3 #7: modern-only, classic retired) ───
 
 @require_owner
 async def cmd_poststyle(client: Client, message: Message):
-    """
-    Configure poster album display style in main channel.
-    Usage:
-      /poststyle classic (default format)
-      /poststyle modern (styled box-drawing format with metadata)
-    """
+    """V3 #7: classic retired — modern-only. Migrates legacy value."""
     from bot.database import db
-    args = _parse_args(message)
-    if not args:
-        cur_style = await db.get_post_style() if db else "classic"
-        await message.reply_text(
-            f"🎨 <b>Channel Post Style Settings</b>\n\n"
-            f"• <b>Current Style:</b> <code>{cur_style.upper()}</code>\n\n"
-            f"<b>Options:</b>\n"
-            f"• <code>/poststyle classic</code> — Standard original post caption\n"
-            f"• <code>/poststyle modern</code> — Modern stylish card with rating, genres, duration & status\n\n"
-            f"<i>Default is classic.</i>",
-            parse_mode=enums.ParseMode.HTML,
-        )
-        return
-
-    chosen = args[0].strip().lower()
-    if chosen in ("modern", "new", "stylish"):
-        if db:
-            await db.set_post_style("modern")
-        await message.reply_text("✅ <b>Post Style set to MODERN!</b> Channel album posts will use the new styled metadata card layout.", parse_mode=enums.ParseMode.HTML)
-    else:
-        if db:
-            await db.set_post_style("classic")
-        await message.reply_text("✅ <b>Post Style set to CLASSIC!</b> Channel album posts will use the standard default layout.", parse_mode=enums.ParseMode.HTML)
+    if db:
+        try:
+            await db.migrate_classic_styles_to_modern()
+        except Exception:
+            pass
+    await message.reply_text(
+        "🎨 <b>Channel Post Style: MODERN-ONLY</b>\n\n"
+        "Classic style was retired in V3 #7. The bot now always uses the modern styled card.\n"
+        "Any stored <code>classic</code> value was migrated to <code>modern</code>.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+    return
 
 
 @require_owner
 async def cmd_startstyle(client: Client, message: Message):
-    """Configure /start command UI style ('classic' or 'modern'). Default is 'classic'."""
+    """V3 #7: classic retired — modern-only."""
     from bot.database import db
-    args = _parse_args(message)
-    if not args:
-        cur_style = await db.get_start_style() if db else "classic"
-        await message.reply_text(
-            f"🎨 <b>Start Menu UI Style Settings</b>\n\n"
-            f"• <b>Current Style:</b> <code>{cur_style.upper()}</code>\n\n"
-            f"<b>Options:</b>\n"
-            f"• <code>/startstyle classic</code> — Standard welcome text & menu keyboard\n"
-            f"• <code>/startstyle modern</code> — Modern stylish card with header image, blockquote & About/Help buttons\n\n"
-            f"<i>Default is classic.</i>",
-            parse_mode=enums.ParseMode.HTML,
-        )
-        return
-
-    chosen = args[0].strip().lower()
-    if chosen in ("modern", "new", "stylish"):
-        if db:
-            await db.set_start_style("modern")
-        await message.reply_text("✅ <b>Start Style set to MODERN!</b> Users will receive the styled anime card and interactive buttons upon /start.", parse_mode=enums.ParseMode.HTML)
-    else:
-        if db:
-            await db.set_start_style("classic")
-        await message.reply_text("✅ <b>Start Style set to CLASSIC!</b> Users will receive the standard text welcome menu.", parse_mode=enums.ParseMode.HTML)
+    if db:
+        try:
+            await db.migrate_classic_styles_to_modern()
+        except Exception:
+            pass
+    await message.reply_text(
+        "🎨 <b>Start Menu UI: MODERN-ONLY</b>\n\n"
+        "Classic style was retired in V3 #7. <code>/start</code> always uses the modern card.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+    return
 
 
 @require_owner
@@ -1511,60 +1483,36 @@ async def cmd_startpic(client: Client, message: Message):
 
 @require_owner
 async def cmd_epstyle(client: Client, message: Message):
-    """Configure episode upload post UI style ('classic' or 'modern'). Default is 'classic'."""
+    """V3 #7: classic retired — modern-only."""
     from bot.database import db
-    args = _parse_args(message)
-    if not args:
-        cur_style = await db.get_ep_style() if db else "classic"
-        await message.reply_text(
-            f"🎨 <b>Episode Upload Post Style Settings</b>\n\n"
-            f"• <b>Current Style:</b> <code>{cur_style.upper()}</code>\n\n"
-            f"<b>Options:</b>\n"
-            f"• <code>/epstyle classic</code> — Standard original post caption (e.g. 📺 Title [Quality])\n"
-            f"• <code>/epstyle modern</code> — Modern stylish card with Audio, Status, Total Episodes, Genre hashtags & quality buttons\n\n"
-            f"<i>Default is classic.</i>",
-            parse_mode=enums.ParseMode.HTML,
-        )
-        return
-
-    chosen = args[0].strip().lower()
-    if chosen in ("modern", "new", "stylish"):
-        if db:
-            await db.set_ep_style("modern")
-        await message.reply_text("✅ <b>Episode Post Style set to MODERN!</b> Channel uploads will use the styled card layout with quality links.", parse_mode=enums.ParseMode.HTML)
-    else:
-        if db:
-            await db.set_ep_style("classic")
-        await message.reply_text("✅ <b>Episode Post Style set to CLASSIC!</b> Channel uploads will use the standard clean caption.", parse_mode=enums.ParseMode.HTML)
+    if db:
+        try:
+            await db.migrate_classic_styles_to_modern()
+        except Exception:
+            pass
+    await message.reply_text(
+        "🎨 <b>Episode Post Style: MODERN-ONLY</b>\n\n"
+        "Classic style was retired in V3 #7. Episode posts always use the modern card.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+    return
 
 
 @require_owner
 async def cmd_schedstyle(client: Client, message: Message):
-    """Configure anime schedule UI style ('classic' or 'modern'). Default is 'classic'."""
+    """V3 #7: classic retired — modern-only."""
     from bot.database import db
-    args = _parse_args(message)
-    if not args:
-        cur_style = await db.get_sched_style() if db else "classic"
-        await message.reply_text(
-            f"📅 <b>Anime Schedule UI Style Settings</b>\n\n"
-            f"• <b>Current Style:</b> <code>{cur_style.upper()}</code>\n\n"
-            f"<b>Options:</b>\n"
-            f"• <code>/schedstyle classic</code> — Standard list layout with weekly day tabs\n"
-            f"• <code>/schedstyle modern</code> — Stylish box-drawing cards with Today/Upcoming switch & Close button\n\n"
-            f"<i>Default is classic.</i>",
-            parse_mode=enums.ParseMode.HTML,
-        )
-        return
-
-    chosen = args[0].strip().lower()
-    if chosen in ("modern", "new", "stylish"):
-        if db:
-            await db.set_sched_style("modern")
-        await message.reply_text("✅ <b>Schedule Style set to MODERN!</b> /schedule will display styled box-drawing cards with double-line borders.", parse_mode=enums.ParseMode.HTML)
-    else:
-        if db:
-            await db.set_sched_style("classic")
-        await message.reply_text("✅ <b>Schedule Style set to CLASSIC!</b> /schedule will display standard list layout.", parse_mode=enums.ParseMode.HTML)
+    if db:
+        try:
+            await db.migrate_classic_styles_to_modern()
+        except Exception:
+            pass
+    await message.reply_text(
+        "📅 <b>Schedule UI: MODERN-ONLY</b>\n\n"
+        "Classic style was retired in V3 #7. <code>/schedule</code> always uses modern cards.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+    return
 
 
 @require_owner

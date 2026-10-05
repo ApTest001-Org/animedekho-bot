@@ -71,11 +71,11 @@ COMMAND_CATEGORIES = {
     "cmd_cat:styles": (
         "🎨 <b>UI Styles & Customization:</b>\n\n"
         "• <code>/settings</code> — Interactive visual control panel\n"
-        "• <code>/startstyle &lt;classic|modern&gt;</code> — Set /start UI design\n"
+        "• <code>/startstyle</code> — Start UI status (modern-only, V3 #7)\n"
         "• <code>/startpic &lt;url|reply|reset&gt;</code> — Set /start banner photo\n"
-        "• <code>/schedstyle &lt;classic|modern&gt;</code> — Set /schedule design\n"
-        "• <code>/epstyle &lt;classic|modern&gt;</code> — Set episode post design\n"
-        "• <code>/poststyle &lt;classic|modern&gt;</code> — Set channel card design\n"
+        "• <code>/schedstyle</code> — Schedule UI status (modern-only, V3 #7)\n"
+        "• <code>/epstyle</code> — Episode post status (modern-only, V3 #7)\n"
+        "• <code>/poststyle</code> — Channel card status (modern-only, V3 #7)\n"
         "• <code>/setthumb &lt;reply&gt;</code> — Set custom manual thumbnail\n"
         "• <code>/delthumb</code> — Delete custom thumbnail\n"
         "• <code>/viewthumb</code> — View currently configured thumbnail"
@@ -167,10 +167,10 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
     """Fetch current state from DB and render interactive dashboard."""
     fsub_mod = await db.get_fsub_mod() if db else True
     dlt_time = await db.get_dlt_time() if db else 600
-    start_style = await db.get_start_style() if db else "classic"
-    sched_style = await db.get_sched_style() if db else "classic"
-    ep_style = await db.get_ep_style() if db else "classic"
-    post_style = await db.get_post_style() if db else "classic"
+    start_style = await db.get_start_style() if db else "modern"
+    sched_style = await db.get_sched_style() if db else "modern"
+    ep_style = await db.get_ep_style() if db else "modern"
+    post_style = await db.get_post_style() if db else "modern"
     auto_thumb = await db.get_auto_thumb() if db else True
     auto_sched = await db.get_auto_schedule_post() if db else False
     auto_search = await db.get_auto_search() if db else True
@@ -342,28 +342,21 @@ async def settings_callback(client: Client, query: CallbackQuery):
         alert_msg = f"Auto-Delete set to: {'Disabled' if next_val == 0 else f'{next_val // 60} Minutes'}"
 
     elif data == "set_toggle:start_style":
-        cur = await db.get_start_style()
-        new_style = "classic" if cur == "modern" else "modern"
-        await db.set_start_style(new_style)
-        alert_msg = f"Start Menu Style set to: {new_style.capitalize()}"
+        # V3 #7: modern-only — toggle retired, enforce modern.
+        await db.set_start_style("modern")
+        alert_msg = "Start Menu Style: Modern (classic retired)"
 
     elif data == "set_toggle:sched_style":
-        cur = await db.get_sched_style()
-        new_style = "classic" if cur == "modern" else "modern"
-        await db.set_sched_style(new_style)
-        alert_msg = f"Schedule Style set to: {new_style.capitalize()}"
+        await db.set_sched_style("modern")
+        alert_msg = "Schedule Style: Modern (classic retired)"
 
     elif data == "set_toggle:ep_style":
-        cur = await db.get_ep_style()
-        new_style = "classic" if cur == "modern" else "modern"
-        await db.set_ep_style(new_style)
-        alert_msg = f"Episode Post Style set to: {new_style.capitalize()}"
+        await db.set_ep_style("modern")
+        alert_msg = "Episode Post Style: Modern (classic retired)"
 
     elif data == "set_toggle:post_style":
-        cur = await db.get_post_style()
-        new_style = "classic" if cur == "modern" else "modern"
-        await db.set_post_style(new_style)
-        alert_msg = f"Channel Card Style set to: {new_style.capitalize()}"
+        await db.set_post_style("modern")
+        alert_msg = "Channel Card Style: Modern (classic retired)"
 
     elif data == "set_toggle:custom_emoji":
         cur = await db.get_enable_custom_emoji()

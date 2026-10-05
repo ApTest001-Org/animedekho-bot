@@ -162,10 +162,10 @@ Minimal surface for users — full arsenal for admins. Tap <kbd>/commands</kbd> 
 | `/setchannellink` | Set channel invite link                        |
 | `/delete`         | Delete a series or file                        |
 | `/setdump`        | Configure dump storage channel                 |
-| `/poststyle`      | Toggle channel post style (classic/modern)     |
-| `/startstyle`     | Toggle /start UI style                         |
-| `/schedstyle`     | Toggle /schedule UI style                      |
-| `/epstyle`        | Toggle episode post style                      |
+| `/poststyle`      | Channel post style status (modern-only, V3 #7) |
+| `/startstyle`     | /start UI style status (modern-only, V3 #7)      |
+| `/schedstyle`     | /schedule UI style status (modern-only, V3 #7)   |
+| `/epstyle`        | Episode post style status (modern-only, V3 #7)   |
 | `/startpic`       | Set banner photo for /start modern UI          |
 | `/setthumb`       | Set custom upload thumbnail                    |
 | `/delthumb`       | Delete custom thumbnail                        |
@@ -257,7 +257,7 @@ cp .env.example .env
 | `FSUB_MOD`              | 2-minute expiring invite links                         | `on`         |
 | `AUTO_DELETE_TIME`      | Media self-destruct timer (seconds, `0` = off)         | `600`        |
 | `AUTO_SCHEDULE_POST`    | Daily schedule card at 12 AM IST                       | `off`        |
-| `START_STYLE` / `SCHED_STYLE` / `EP_STYLE` / `POST_STYLE` | UI styles: `classic` or `modern` | `classic` |
+| `START_STYLE` / `SCHED_STYLE` / `EP_STYLE` / `POST_STYLE` | UI styles: `modern`-only (classic retired, V3 #7) | `modern` |
 | `START_PIC` / `START_MSG` | Custom /start banner & text                          | —            |
 | `FSUB_PIC` / `FSUB_MSG` | Custom FSub banner & text                              | —            |
 | `DEFAULT_ANIME_THUMB` / `DEFAULT_MOVIE_THUMB` | Fallback posters              | Unsplash URLs|

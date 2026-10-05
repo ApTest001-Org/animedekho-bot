@@ -45,16 +45,40 @@ class DownloadJob:
 
 
 class DownloadJobManager:
-    """Tracks active download tasks and allows instant per-job cancellation (Issue #22 & #23)."""
+    """Tracks active download tasks and allows instant per-job cancellation (Issue #22 & #23).
+
+    V3 #6 batch lifecycle:
+        Batch Job ─┬─ Episode Job 1
+                   ├─ Episode Job 2
+                   └─ Episode Job 3
+    One cancel on the batch ID stops the exact batch (and its episode
+    children) without touching other users' jobs.
+    """
 
     def __init__(self):
         self._jobs: dict[str, DownloadJob] = {}
         self._cancelled_ids: set[str] = set()
+        self._batch_children: dict[str, set[str]] = {}
+        self._child_parent: dict[str, str] = {}
 
     def create_job(self, user_id: int, title: str, progress_msg: Message | None = None) -> str:
         job_id = uuid.uuid4().hex[:10]
         self._jobs[job_id] = DownloadJob(job_id, user_id, title, progress_msg)
         return job_id
+
+    def create_batch_job(self, user_id: int, title: str, total: int, progress_msg: Message | None = None) -> str:
+        """V3 #6: create a parent batch job tracking total episodes."""
+        batch_id = self.create_job(user_id, f"Batch: {title} ({total} eps)", progress_msg)
+        self._batch_children[batch_id] = set()
+        return batch_id
+
+    def create_episode_job(self, batch_id: str | None, user_id: int, title: str, progress_msg: Message | None = None) -> str:
+        """V3 #6: create a child episode job linked to its batch parent."""
+        child_id = self.create_job(user_id, title, progress_msg)
+        if batch_id:
+            self._batch_children.setdefault(batch_id, set()).add(child_id)
+            self._child_parent[child_id] = batch_id
+        return child_id
 
     def get_job(self, job_id: str) -> DownloadJob | None:
         return self._jobs.get(job_id)
@@ -65,7 +89,18 @@ class DownloadJobManager:
         if job_id in self._cancelled_ids:
             return True
         job = self._jobs.get(job_id)
-        return bool(job and job.is_cancelled)
+        if job and job.is_cancelled:
+            return True
+        # V3 #6: an episode child is cancelled when its batch parent is.
+        parent = self._child_parent.get(job_id)
+        if parent and (parent in self._cancelled_ids or
+                       (self._jobs.get(parent) and self._jobs[parent].is_cancelled)):
+            return True
+        return False
+
+    def batch_is_cancelled(self, batch_id: str | None) -> bool:
+        """V3 #6: convenience alias for batch-parent checks in batch loops."""
+        return self.is_job_cancelled(batch_id)
 
     def attach_task(self, job_id: str, task: asyncio.Task):
         job = self._jobs.get(job_id)
@@ -89,6 +124,10 @@ class DownloadJobManager:
     async def cancel_job(self, job_id: str, user_id: int, is_admin: bool = False) -> tuple[bool, str]:
         job = self._jobs.get(job_id)
         if not job:
+            # V3 #6: batch IDs may have been popped as children finished —
+            # still honour idempotent cancel via the tombstone set.
+            if job_id in self._cancelled_ids:
+                return True, "Already cancelled"
             return False, "Job not found or already finished"
 
         if job.user_id != user_id and not is_admin:
@@ -98,6 +137,28 @@ class DownloadJobManager:
         if len(self._cancelled_ids) > 1000:
             self._cancelled_ids = set(list(self._cancelled_ids)[-500:])
         job.is_cancelled = True
+
+        # V3 #6: cancelling a batch parent cancels every live episode child
+        # (exact batch only — other users' jobs are untouched).
+        for child_id in list(self._batch_children.get(job_id, set())):
+            child = self._jobs.get(child_id)
+            if child:
+                child.is_cancelled = True
+                self._cancelled_ids.add(child_id)
+                for proc in list(child.subprocesses):
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                child.subprocesses.clear()
+                if child.task and not child.task.done():
+                    child.task.cancel()
+            self._child_parent.pop(child_id, None)
+        self._batch_children.pop(job_id, None)
+        # If this was an episode child, detach from its parent set.
+        parent = self._child_parent.pop(job_id, None)
+        if parent and parent in self._batch_children:
+            self._batch_children[parent].discard(job_id)
 
         # Terminate running subprocesses
         for proc in list(job.subprocesses):
@@ -140,6 +201,11 @@ class DownloadJobManager:
     def remove_job(self, job_id: str | None):
         if job_id:
             self._jobs.pop(job_id, None)
+            # V3 #6: keep parent→child bookkeeping consistent.
+            self._batch_children.pop(job_id, None)
+            parent = self._child_parent.pop(job_id, None)
+            if parent and parent in self._batch_children:
+                self._batch_children[parent].discard(job_id)
 
 
 download_job_manager = DownloadJobManager()
@@ -482,8 +548,14 @@ async def n_m3u8dl_re_download(
 
         if select_res and height:
             cmd.extend(["--select-video", f"res=.*{height}.*:for=best"])
-        else:
+        elif str(quality).strip().lower() == "auto":
             cmd.extend(["--auto-select"])
+        else:
+            # V3 #2: never --auto-select for an explicit quality request.
+            # Without a resolution filter N_m3u8DL-RE would grab best/auto
+            # and bypass exact-quality enforcement. Keep the resolution
+            # filter as the only selector.
+            cmd.extend(["--select-video", f"res=.*{height}.*:for=best"] if height else ["--auto-select"])
 
         env = os.environ.copy()
         env["TERM"] = "xterm"
@@ -599,7 +671,8 @@ async def n_m3u8dl_re_download(
         return os.path.exists(output_path) and os.path.getsize(output_path) > 0
 
     try:
-        # Step 1: If variant_url is given and different from master stream_url, try auto-select on variant directly
+        # Step 1: If exact variant_url is given, download it directly
+        # (variant came from strict exact-match resolution — no selector).
         if variant_url and variant_url != stream_url:
             log.info("N_m3u8DL-RE downloading targeted variant directly: %s", variant_url[:80])
             success = await _run_dl(variant_url, select_res=False)
@@ -607,19 +680,22 @@ async def n_m3u8dl_re_download(
                 log.info("N_m3u8DL-RE variant download complete: %s (%s)", output_path, _format_size(os.path.getsize(output_path)))
                 return True
 
-        # Step 2: Run on stream_url with resolution filter
+        # Step 2: Run on stream_url with strict resolution filter.
         success = await _run_dl(stream_url, select_res=bool(height))
         if success:
             log.info("N_m3u8DL-RE download complete: %s (%s)", output_path, _format_size(os.path.getsize(output_path)))
             return True
 
-        # Step 3: Retry with auto-select on variant_url (or stream_url) if select_res failed
-        target = variant_url or stream_url
-        log.info("N_m3u8DL-RE retrying with --auto-select on %s", target[:80])
-        success = await _run_dl(target, select_res=False)
-        if success:
-            log.info("N_m3u8DL-RE auto-select complete: %s (%s)", output_path, _format_size(os.path.getsize(output_path)))
-            return True
+        # V3 #2: no Step-3 --auto-select retry for explicit qualities.
+        # An auto retry would silently deliver the wrong quality.
+        # Only 'auto' requests may retry without a resolution filter.
+        if str(quality).strip().lower() == "auto":
+            target = variant_url or stream_url
+            log.info("N_m3u8DL-RE retrying with --auto-select on %s", target[:80])
+            success = await _run_dl(target, select_res=False)
+            if success:
+                log.info("N_m3u8DL-RE auto-select complete: %s (%s)", output_path, _format_size(os.path.getsize(output_path)))
+                return True
 
         return False
     finally:
@@ -722,11 +798,19 @@ async def ffmpeg_download(
 
 
 async def resolve_m3u8_variant(master_url: str, target_quality: str, referer: str = "") -> str:
-    """If master_url is an M3U8 master playlist, pick the matching resolution variant URL."""
+    """V3 #2: strict exact-variant only.
+
+    If master_url is an M3U8 master playlist, return the variant URL whose
+    height exactly equals the requested quality, else return "" (no exact
+    match → caller must try the next source, never auto-pick closest).
+    Non-playlist URLs pass through unchanged. ``auto`` passes through.
+    """
     if not master_url or ".m3u8" not in master_url.lower():
         return master_url
 
-    t_clean = target_quality.strip().lower()
+    t_clean = (target_quality or "").strip().lower()
+    if t_clean == "auto":
+        return master_url
     h_target = None
     m_res = re.search(r"(\d{3,4})p?", t_clean)
     if m_res and int(m_res.group(1)) in (240, 360, 480, 540, 720, 1080, 1440, 2160):
@@ -788,9 +872,11 @@ async def resolve_m3u8_variant(master_url: str, target_quality: str, referer: st
         if exact:
             return exact[0]
 
-        # Closest variant
-        variants.sort(key=lambda x: abs(x[0] - h_target))
-        return variants[0][1]
+        # V3 #2: no closest/auto fallback — exact quality absent in this
+        # master playlist, so signal failure for next-source fallback.
+        log.info("resolve_m3u8_variant: no exact %sp variant in master (%s variants) — rejecting",
+                 h_target, len(variants))
+        return ""
     except Exception as e:
         log.debug("resolve_m3u8_variant error: %s", e)
         return master_url
@@ -935,19 +1021,22 @@ async def fix_or_verify_video_resolution(
     w = int(meta.get("width") or 0)
     h = int(meta.get("height") or 0)
     if not w or not h:
-        return True, "", meta
+        # V3 #2: cannot verify → reject explicit requests (next source),
+        # accept only for auto.
+        if (requested_quality or "").strip().lower() == "auto":
+            return True, "", meta
+        return False, f"Resolution unverifiable for {target_height}p request", meta
 
     actual_res = min(w, h)
 
-    needs_downscale = False
-    if target_height == 480 and actual_res > 520:
-        needs_downscale = True
-    elif target_height == 720 and actual_res > 800:
-        needs_downscale = True
-    elif target_height == 360 and actual_res > 400:
-        needs_downscale = True
-    elif target_height == 240 and actual_res > 280:
-        needs_downscale = True
+    # V3 #2 strict bands (±~12% tolerance for encoder variance).
+    # Oversize → downscale to exact; undersize/out-of-band → reject so the
+    # caller tries the next source instead of delivering the wrong quality.
+    bands = {2160: (1900, 2300), 1080: (950, 1200), 720: (630, 810),
+             480: (420, 530), 360: (310, 410), 240: (200, 280)}
+    lo, hi = bands.get(target_height, (0, 0))
+
+    needs_downscale = actual_res > hi
 
     if needs_downscale:
         ffmpeg_bin = shutil.which("ffmpeg")
@@ -1008,11 +1097,7 @@ async def fix_or_verify_video_resolution(
                     except Exception:
                         pass
 
-    if target_height >= 2160 and actual_res < 1440:
-        return False, f"Resolution mismatch: requested 4K ({target_height}p) but got {actual_res}p", meta
-    if target_height >= 1080 and actual_res <= 540:
-        return False, f"Resolution mismatch: requested {target_height}p but got {actual_res}p", meta
-    if target_height >= 720 and actual_res <= 360:
+    if lo and hi and not (lo <= actual_res <= hi):
         return False, f"Resolution mismatch: requested {target_height}p but got {actual_res}p", meta
 
     return True, "", meta
@@ -1068,9 +1153,15 @@ async def download_media(
         log.warning("N_m3u8DL-RE failed for %s, falling back to FFmpeg", stream_url[:60])
 
     # Fallback to FFmpeg on resolved variant_url or stream_url
+    # V3 #2: resolve_m3u8_variant returns "" when the master playlist has
+    # no exact-quality variant — fail this source instead of downloading
+    # the wrong quality from the master URL.
     target_url = variant_url or stream_url
-    if not variant_url and ".m3u8" in stream_url.lower():
+    if not variant_url and ".m3u8" in stream_url.lower() and str(quality).strip().lower() != "auto":
         resolved = await resolve_m3u8_variant(stream_url, quality, referer=referer)
+        if resolved == "":
+            log.warning("No exact %s variant in M3U8 master — rejecting source (V3 #2)", quality)
+            return False
         if resolved and resolved != stream_url:
             target_url = resolved
 
@@ -1109,7 +1200,7 @@ async def _build_episode_caption_and_markup(
     client: Client,
     target_chat: int,
     language: str = "",
-    post_style: str = "classic",
+    post_style: str = "modern",
 ) -> tuple[str, InlineKeyboardMarkup | None]:
     import html as htmlmod
     from bot.database import db
@@ -1181,6 +1272,18 @@ async def _build_episode_caption_and_markup(
     bot_me = getattr(client, "me", None)
     bname = bot_me.username if bot_me and bot_me.username else "animedekho"
 
+    def _worker_for(q_label: str) -> str:
+        """V3 #15: per-quality worker username, explicit fallback only."""
+        try:
+            from bot.child_bots import child_bot_manager
+            if child_bot_manager:
+                w = child_bot_manager.get_bot_for_quality(q_label)
+                if w:
+                    return w.lstrip("@")
+        except Exception:
+            pass
+        return bname
+
     caption_lines = [
         f"✦ <b>{htmlmod.escape(s_title)}</b> ✦",
         f"Season {season_num:02d} • Episode {ep_num:02d}",
@@ -1223,7 +1326,7 @@ async def _build_episode_caption_and_markup(
     for q_item in sorted_q:
         q_code = q_item.lower().replace(" ", "")
         param = encode_file_param(f"get_{slug}_{q_code}_S{season_num:01d}E{ep_num:02d}")
-        link = f"https://t.me/{bname}?start={param}"
+        link = f"https://t.me/{_worker_for(q_item)}?start={param}"
         curr_row.append(InlineKeyboardButton(f"{q_item} ↗", url=link))
         if len(curr_row) == 2:
             button_rows.append(curr_row)
@@ -1333,9 +1436,28 @@ async def download_and_upload(
                     except Exception as fe:
                         log.debug("Fallback thumbnail download failed: %s", fe)
 
-        # Resolve M3U8 variant if needed so 480p is not bloated with 1080p stream
-        if not variant_url or variant_url == stream_url:
+        # Resolve M3U8 variant for exact quality (V3 #2).
+        # "" means master playlist lacks the exact quality → fail this
+        # source so the caller tries the next source instead of a wrong one.
+        if (not variant_url or variant_url == stream_url) and ".m3u8" in stream_url.lower() \
+                and str(quality).strip().lower() != "auto":
             resolved_var = await resolve_m3u8_variant(stream_url, quality, referer=referer)
+            if resolved_var == "":
+                from bot.database import db as _db2
+                if _db2:
+                    try:
+                        await _db2.log_download_failure(
+                            title=title, quality=quality, source=referer or "stream",
+                            error=f"No exact {quality} variant in M3U8 master", user_id=chat_id,
+                        )
+                    except Exception:
+                        pass
+                await progress_msg.edit_text(
+                    f"❌ <b>Quality Unavailable</b>\n"
+                    f"┌ 📺 {title}\n"
+                    f"└ 💔 No exact {quality} stream on this source — trying next source...",
+                    parse_mode=enums.ParseMode.HTML)
+                return False, None
             if resolved_var and resolved_var != stream_url:
                 variant_url = resolved_var
 
@@ -1566,7 +1688,7 @@ async def download_and_upload(
         dump_channel_id = await db.get_dump_channel() if db else None
         upload_mode = await db.get_upload_mode() if db else "video"
 
-        post_style = await db.get_post_style() if db else "classic"
+        post_style = await db.get_post_style() if db else "modern"
         # Build style-aware episode caption and quality buttons
         caption_text, markup_obj = await _build_episode_caption_and_markup(
             title=title, quality=quality, series_slug=series_slug, client=client, target_chat=target_upload_chat,

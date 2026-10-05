@@ -123,29 +123,18 @@ class AnimeDubHindiExtractor:
         if not search_results:
             return None
 
-        # Clean title keywords for matching
-        q_words = [w.lower() for w in re.findall(r"\w+", anime_title) if len(w) > 2]
-
+        # V3 #5: confident title + strict season matching (no single-keyword guess).
+        from utils.anime_match import is_confident_match, matches_season
         target_post = None
         for res in search_results:
-            t = res["title"].lower()
-            href = res["url"].lower()
-            # Verify title similarity - at least one key word must match
-            if q_words and not any(w in t or w in href for w in q_words):
+            t = res.get("title", "")
+            href = res.get("url", "")
+            if not is_confident_match(anime_title, t, href):
                 continue
-
-            # Strict season matching
-            s_patterns = (
-                f"season {season}",
-                f"season {season:02d}",
-                f"season-{season}",
-                f"season-{season:02d}",
-                f"s{season}",
-                f"s{season:02d}",
-            )
-            if any(p in t or p in href for p in s_patterns) or (season == 1 and "season" not in t and "season" not in href):
-                target_post = res
-                break
+            if not matches_season(t, href, season):
+                continue
+            target_post = res
+            break
 
         if not target_post:
             log.info("AnimeDubHindi: No matching season %d post found for '%s'", season, anime_title)
@@ -258,12 +247,14 @@ class AnimeDubHindiExtractor:
 
                     curr = curr.find_next_sibling()
 
-            # Quality preference order: requested quality first, then remaining
-            pref_norm = quality_pref.lower()
+            # V3 #2: exact requested bucket only — no fallback to other
+            # qualities. V3 #4: "other" bucket stays "Unknown", never the
+            # requested label. Extra fields keep the distinction explicit.
+            from utils.anime_match import normalize_quality
+            pref_norm = normalize_quality(quality_pref)
+            if pref_norm == "Unknown":
+                pref_norm = quality_pref.strip().lower()
             q_order = [pref_norm]
-            for fallback_q in ["1080p", "720p", "480p", "other"]:
-                if fallback_q not in q_order:
-                    q_order.append(fallback_q)
 
             # Try resolving direct link from the chosen quality bucket
             for q_cand in q_order:
@@ -298,7 +289,10 @@ class AnimeDubHindiExtractor:
                                 log.info("AnimeDubHindi: Resolved HubCloud direct stream: %s", hub_stream[:80])
                                 return {
                                     "url": hub_stream,
-                                    "quality": q_cand if q_cand != "other" else quality_pref,
+                                    "quality": (q_cand if q_cand != "other" else "Unknown"),
+                                    "requested_quality": quality_pref,
+                                    "detected_quality": (q_cand if q_cand != "other" else "Unknown"),
+                                    "verified_quality": (q_cand if q_cand != "other" else "Unknown"),
                                     "source": "AnimeDubHindi",
                                     "poster": target_post.get("poster"),
                                 }
@@ -323,13 +317,19 @@ class AnimeDubHindiExtractor:
                                         log.info("AnimeDubHindi: Extracted direct worker URL: %s", worker_url[:80])
                                         return {
                                             "url": worker_url,
-                                            "quality": q_cand if q_cand != "other" else quality_pref,
+                                            "quality": (q_cand if q_cand != "other" else "Unknown"),
+                                            "requested_quality": quality_pref,
+                                            "detected_quality": (q_cand if q_cand != "other" else "Unknown"),
+                                            "verified_quality": (q_cand if q_cand != "other" else "Unknown"),
                                             "source": "AnimeDubHindi",
                                             "poster": target_post.get("poster"),
                                         }
                                 return {
                                     "url": target_dest,
-                                    "quality": q_cand if q_cand != "other" else quality_pref,
+                                    "quality": (q_cand if q_cand != "other" else "Unknown"),
+                                    "requested_quality": quality_pref,
+                                    "detected_quality": (q_cand if q_cand != "other" else "Unknown"),
+                                    "verified_quality": (q_cand if q_cand != "other" else "Unknown"),
                                     "source": "AnimeDubHindi",
                                     "poster": target_post.get("poster"),
                                 }
@@ -345,7 +345,10 @@ class AnimeDubHindiExtractor:
                                 log.info("AnimeDubHindi: redirect.php 302 -> %s", loc)
                                 return {
                                     "url": loc,
-                                    "quality": q_cand if q_cand != "other" else quality_pref,
+                                    "quality": (q_cand if q_cand != "other" else "Unknown"),
+                                    "requested_quality": quality_pref,
+                                    "detected_quality": (q_cand if q_cand != "other" else "Unknown"),
+                                    "verified_quality": (q_cand if q_cand != "other" else "Unknown"),
                                     "source": "AnimeDubHindi",
                                     "poster": target_post.get("poster"),
                                 }
@@ -356,7 +359,10 @@ class AnimeDubHindiExtractor:
                     elif any(k in target_url.lower() for k in ("fpgo.xyz", "filepress")):
                         return {
                             "url": target_url,
-                            "quality": q_cand if q_cand != "other" else quality_pref,
+                            "quality": (q_cand if q_cand != "other" else "Unknown"),
+                            "requested_quality": quality_pref,
+                            "detected_quality": (q_cand if q_cand != "other" else "Unknown"),
+                            "verified_quality": (q_cand if q_cand != "other" else "Unknown"),
                             "source": "AnimeDubHindi",
                             "poster": target_post.get("poster"),
                         }
@@ -365,7 +371,10 @@ class AnimeDubHindiExtractor:
                     elif any(ext in target_url.lower() for ext in (".mkv", ".mp4", ".m3u8")):
                         return {
                             "url": target_url,
-                            "quality": q_cand if q_cand != "other" else quality_pref,
+                            "quality": (q_cand if q_cand != "other" else "Unknown"),
+                            "requested_quality": quality_pref,
+                            "detected_quality": (q_cand if q_cand != "other" else "Unknown"),
+                            "verified_quality": (q_cand if q_cand != "other" else "Unknown"),
                             "source": "AnimeDubHindi",
                             "poster": target_post.get("poster"),
                         }

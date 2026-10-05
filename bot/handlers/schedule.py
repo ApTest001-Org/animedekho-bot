@@ -274,7 +274,7 @@ def _format_modern_schedule_text(
 async def cmd_schedule(client: Client, message: Message):
     """Handle /schedule command — show today's anime release schedule."""
     from bot.database import db
-    sched_style = await db.get_sched_style() if db else "classic"
+    sched_style = await db.get_sched_style() if db else "modern"
 
     status_msg = await message.reply_text("🔄 <i>Fetching anime schedule...</i>", parse_mode=enums.ParseMode.HTML)
     schedules = await schedule_service.get_today_schedule()
@@ -308,7 +308,7 @@ async def schedule_callback(client: Client, query: CallbackQuery):
         return
 
     from bot.database import db
-    sched_style = await db.get_sched_style() if db else "classic"
+    sched_style = await db.get_sched_style() if db else "modern"
 
     parts = data.split(":")
     mode = parts[1] if len(parts) > 1 else "today"

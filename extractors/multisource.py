@@ -193,16 +193,27 @@ class MultiSourceManager:
         Never returns intermediate HTML or ad pages!
         V2 #13: when ``preferred_source`` (the user's selected button source)
         is given, that extractor is tried first before the default order.
+        V3 #2: known non-exact qualities are skipped (next source, not fallback).
+        V3 #4: detected/requested/verified quality fields propagate separately.
+        V3 #10: result carries provider/original/resolved/stage diagnostics.
+        V3 #16: among exact-quality candidates the fastest healthy link wins.
         """
+        from utils.anime_match import normalize_quality, qualities_match
+        from extractors.health_probe import infer_provider, select_fastest_healthy
         clean_title = re.sub(r"(?i)\s*(?:season\s*\d+|s\d+|hindi|dubbed|subbed|multi-audio|tamil|telugu).*$", "", series_title).strip()
         search_title = clean_title or series_title or slug_to_title(series_slug)
         search_title = re.sub(r"[’'\"\-_:!?]+", " ", search_title).strip()
         search_title = re.sub(r"\s+", " ", search_title)
+        want_norm = normalize_quality(quality_pref)
 
         ordered = list(self.sources)
         if preferred_source:
             pref = preferred_source.strip().lower()
             ordered.sort(key=lambda kv: 0 if kv[0].lower() == pref else 1)
+
+        exact_candidates: list[dict] = []
+        unknown_candidates: list[dict] = []
+        diag_trail: list[str] = []
 
         for name, extractor in ordered:
             try:
@@ -214,9 +225,19 @@ class MultiSourceManager:
                     quality_pref=quality_pref,
                 )
                 if not res or not res.get("url"):
+                    diag_trail.append(f"{name}: no result")
+                    continue
+
+                # V3 #2: skip known non-exact qualities outright.
+                got_q = res.get("quality", "Unknown") or "Unknown"
+                got_norm = normalize_quality(got_q)
+                if want_norm != "auto" and got_norm != "Unknown" and got_norm != want_norm:
+                    log.info("Source '%s' returned [%s] for [%s] request — skipping (V3 #2 exact-only)", name, got_q, quality_pref)
+                    diag_trail.append(f"{name}: {got_q} ≠ {quality_pref} → skipped")
                     continue
 
                 curr_url = res["url"].strip()
+                original_url = curr_url
                 log.info("Source '%s' returned initial URL: %s", name, curr_url[:80])
 
                 # Stage 1: Shortener / Redirect resolution
@@ -227,6 +248,7 @@ class MultiSourceManager:
                         curr_url = bypassed
                     elif is_shortener(curr_url):
                         log.warning("Shortener bypass failed for %s on %s; skipping source", curr_url[:60], name)
+                        diag_trail.append(f"{name}: shortener bypass failed")
                         continue
 
                 # Stage 2: HubCloud provider resolution
@@ -241,9 +263,11 @@ class MultiSourceManager:
                             curr_url = hub_res
                         else:
                             log.warning("HubCloud resolution returned unplayable target: %s", hub_res)
+                            diag_trail.append(f"{name}: HubCloud unplayable")
                             continue
                     except Exception as he:
                         log.warning("HubCloud resolution failed for %s: %s", curr_url, he)
+                        diag_trail.append(f"{name}: HubCloud error")
                         continue
 
                 # Stage 3: Player / Embed resolution
@@ -257,32 +281,55 @@ class MultiSourceManager:
                     resolved = await resolve_player_url(curr_url)
                     if resolved and resolved.get("url") and is_valid_media_destination(resolved["url"]):
                         log.info("Successfully resolved player embed via %s -> %s", name, resolved["url"][:80])
-                        return {
-                            "url": resolved["url"],
-                            "quality": resolved.get("quality", res.get("quality", quality_pref)),
-                            "source": name,
-                            "poster": res.get("poster"),
-                        }
+                        curr_url = resolved["url"]
                     else:
                         log.warning("Player embed resolution failed or returned invalid media for %s on %s; rejecting embed page", curr_url[:60], name)
+                        diag_trail.append(f"{name}: player unresolvable")
                         continue
 
                 # Stage 4: Final Validation
                 if not is_valid_media_destination(curr_url):
                     log.warning("Candidate URL failed media destination validation (%s) on %s; rejecting", curr_url[:80], name)
+                    diag_trail.append(f"{name}: media validation failed")
                     continue
 
-                log.info("Fallback source '%s' provided valid downloadable stream [%s]: %s", name, res.get("quality", quality_pref), curr_url[:80])
-                return {
+                entry = {
                     "url": curr_url,
-                    "quality": res.get("quality", quality_pref),
+                    "quality": got_q,
+                    "requested_quality": res.get("requested_quality", quality_pref),
+                    "detected_quality": res.get("detected_quality", got_q),
+                    "verified_quality": res.get("verified_quality", got_q),
                     "source": name,
+                    "provider": infer_provider(curr_url),
+                    "original_url": original_url,
+                    "resolved_url": curr_url,
+                    "resolver_stage": f"{name} → {infer_provider(curr_url)} → Direct Media",
                     "poster": res.get("poster"),
                 }
+                if got_norm == "Unknown":
+                    unknown_candidates.append(entry)
+                else:
+                    exact_candidates.append(entry)
+                diag_trail.append(f"{name}: exact {got_q} ✓" if got_norm != "Unknown" else f"{name}: Unknown quality (verify post-download)")
             except Exception as e:
                 log.warning("Fallback resolver '%s' failed for '%s' S%dE%d: %s", name, search_title, season, episode, e)
+                diag_trail.append(f"{name}: error {e}")
 
-        return None
+        # V3 #16: fastest healthy exact-quality link wins; Unknown only when
+        # no exact candidate exists (post-download ffprobe still enforces).
+        pool = exact_candidates or unknown_candidates
+        if not pool:
+            log.info("MultiSource: no candidates (%s)", "; ".join(diag_trail))
+            return None
+        best, health_diags = await select_fastest_healthy(pool)
+        if not best:
+            log.info("MultiSource: all %d candidates unhealthy — failing (V3 #16)", len(pool))
+            return None
+        best["health_diagnostics"] = health_diags
+        best["diagnostic_trail"] = diag_trail
+        log.info("Fallback source '%s' selected [%s via %s]: %s",
+                 best["source"], best["quality"], best["provider"], best["url"][:80])
+        return best
 
 
 multi_source_manager = MultiSourceManager()

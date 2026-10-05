@@ -46,7 +46,7 @@ async def cmd_start(client: Client, message: Message):
     if db:
         invite_link = await db.get_config("channel_invite_link")
 
-    start_style = await db.get_start_style() if db else "classic"
+    start_style = await db.get_start_style() if db else "modern"
 
     if start_style == "modern":
         from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton

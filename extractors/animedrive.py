@@ -333,61 +333,13 @@ class AnimeDriveExtractor:
             return "auto"
 
         def _score_candidate(q_detected: str, dest_url: str) -> tuple[int, str]:
+            # V3 #2: exact requested quality only — no closest fallback.
+            from utils.anime_match import qualities_match
             is_hub = "hubcloud" in dest_url.lower()
             h_bonus = 20 if is_hub else 0
-
-            if is_4k:
-                rankings = {
-                    "4K": 1000,
-                    "2160p": 1000,
-                }
-                score = rankings.get(q_detected, -1)
-                if score < 0:
-                    return (-1, q_detected)
-                return (score + h_bonus, q_detected)
-
-            clean_pref = quality_pref.lower().replace("p", "")
-            if clean_pref == "480":
-                # Strict 480p requested: 480p is priority 1000; never prioritize heavy 1080p files
-                rankings = {
-                    "480p": 1000,
-                    "360p": 700,
-                    "720p": 500,
-                    "720p HQ": 450,
-                    "1080p": 300,
-                    "1080p HQ": 250,
-                    "1080p HQ x265": 200,
-                    "4K": 100,
-                    "auto": 200,
-                }
-                return (rankings.get(q_detected, 200) + h_bonus, q_detected)
-
-            if clean_pref == "720":
-                rankings = {
-                    "720p": 1000,
-                    "720p HQ": 980,
-                    "1080p": 700,
-                    "480p": 600,
-                    "1080p HQ": 500,
-                    "1080p HQ x265": 450,
-                    "4K": 300,
-                    "auto": 200,
-                }
-                return (rankings.get(q_detected, 200) + h_bonus, q_detected)
-
-            if clean_pref == "1080":
-                rankings = {
-                    "1080p": 1000,
-                    "1080p HQ": 980,
-                    "1080p HQ x265": 950,
-                    "4K": 800,
-                    "720p": 600,
-                    "480p": 300,
-                    "auto": 200,
-                }
-                return (rankings.get(q_detected, 200) + h_bonus, q_detected)
-
-            return (500 + h_bonus, q_detected)
+            if qualities_match(quality_pref, q_detected):
+                return (1000 + h_bonus, q_detected)
+            return (-1, q_detected)
 
         candidates: list[tuple[int, str, str]] = []
         for b in buttons:
@@ -401,12 +353,15 @@ class AnimeDriveExtractor:
 
             q_detected = _detect_btn_resolution(b, href)
             sc, q_match = _score_candidate(q_detected, dest)
+            if sc < 0:
+                continue  # V3 #2: non-exact quality discarded
             candidates.append((sc, dest, q_match))
 
         # Sort candidates descending by quality score
         candidates.sort(key=lambda x: -x[0])
 
         # Step 6: Resolve candidates to direct playable stream
+        # V3 #4: explicit detected/requested/verified quality fields.
         for sc, dest, q_label in candidates:
             if "hubcloud" in dest:
                 stream_url = self._resolve_hubcloud(s, dest)
@@ -414,7 +369,10 @@ class AnimeDriveExtractor:
                     log.info("AnimeDrive: Successfully resolved HubCloud direct stream [%s, score=%d]: %s", q_label, sc, stream_url[:80])
                     return {
                         "url": stream_url,
-                        "quality": q_label if q_label != "auto" else quality_pref,
+                        "quality": q_label,
+                        "requested_quality": quality_pref,
+                        "detected_quality": q_label,
+                        "verified_quality": q_label,
                         "server": "AnimeDrive (HubCloud)",
                         "referer": "https://hubcloud.ist/",
                         "poster": target_poster,
@@ -423,7 +381,10 @@ class AnimeDriveExtractor:
                 log.info("AnimeDrive: Direct playable link [%s, score=%d]: %s", q_label, sc, dest[:80])
                 return {
                     "url": dest,
-                    "quality": q_label if q_label != "auto" else quality_pref,
+                    "quality": q_label,
+                    "requested_quality": quality_pref,
+                    "detected_quality": q_label,
+                    "verified_quality": q_label,
                     "server": "AnimeDrive",
                     "referer": "https://link.animedrive.me/",
                     "poster": target_poster,

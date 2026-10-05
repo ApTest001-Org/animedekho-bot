@@ -10,6 +10,17 @@ from motor.motor_asyncio import AsyncIOMotorClient
 log = logging.getLogger(__name__)
 
 
+def _sanitize_upsert(set_doc: dict, set_on_insert: dict) -> tuple[dict, dict]:
+    """V3 #1: MongoDB rejects an upsert when the same path appears in both
+    $set and $setOnInsert ("Updating the path ... would create a conflict").
+    Strip any overlap from $setOnInsert — $set already covers the path on
+    both insert and update. Returns the (possibly mutated) pair."""
+    for k in list(set_on_insert.keys()):
+        if k in set_doc:
+            set_on_insert.pop(k, None)
+    return set_doc, set_on_insert
+
+
 class Database:
     def __init__(self, mongo_uri: str, db_name: str = "animedekho"):
         self.client = AsyncIOMotorClient(mongo_uri)
@@ -373,20 +384,23 @@ class Database:
         """Add or update a child worker bot in MongoDB."""
         now = datetime.now(timezone.utc).isoformat()
         try:
+            set_doc = {
+                "token": token,
+                "username": username.lstrip("@"),
+                "bot_id": bot_id,
+                "first_name": first_name,
+                "quality": quality.strip().lower(),
+                "is_active": True,
+                "updated_at": now,
+            }
+            set_on_insert = {
+                "created_at": now,
+                "files_served": 0,
+            }
+            _sanitize_upsert(set_doc, set_on_insert)  # V3 #1 audit
             await self.child_bots.update_one(
                 {"bot_id": bot_id},
-                {"$set": {
-                    "token": token,
-                    "username": username.lstrip("@"),
-                    "bot_id": bot_id,
-                    "first_name": first_name,
-                    "quality": quality.strip().lower(),
-                    "is_active": True,
-                    "updated_at": now,
-                }, "$setOnInsert": {
-                    "created_at": now,
-                    "files_served": 0,
-                }},
+                {"$set": set_doc, "$setOnInsert": set_on_insert},
                 upsert=True,
             )
             return True
@@ -586,25 +600,34 @@ class Database:
             # Two concurrent creators can no longer duplicate-insert on
             # unique series_slug; the second becomes an update instead.
             try:
+                set_doc: dict = {
+                    f"language_routes.{lang_clean}": route_entry,
+                    "updated_at": now,
+                }
+                if series_title:
+                    set_doc["series_title"] = series_title
+                if poster_url:
+                    set_doc["poster_url"] = poster_url
+                set_on_insert: dict = {
+                    "series_slug": series_slug,
+                    "channel_id": channel_id,
+                    "invite_link": invite_link,
+                    "language": lang_clean,
+                    "auto_created": auto_created,
+                    "created_by": created_by,
+                    "created_at": now,
+                }
+                # V3 #1: same path must never appear in both $set and
+                # $setOnInsert — MongoDB rejects the upsert with
+                # "Updating the path ... would create a conflict".
+                # $set already covers series_title/poster_url on insert,
+                # so strip any overlap from $setOnInsert defensively.
+                _sanitize_upsert(set_doc, set_on_insert)
                 await self.channel_mappings.update_one(
                     {"series_slug": series_slug},
                     {
-                        "$set": {
-                            f"language_routes.{lang_clean}": route_entry,
-                            "updated_at": now,
-                            **({"series_title": series_title} if series_title else {}),
-                            **({"poster_url": poster_url} if poster_url else {}),
-                        },
-                        "$setOnInsert": {
-                            "series_slug": series_slug,
-                            "series_title": series_title or series_slug,
-                            "channel_id": channel_id,
-                            "invite_link": invite_link,
-                            "language": lang_clean,
-                            "auto_created": auto_created,
-                            "created_by": created_by,
-                            "created_at": now,
-                        },
+                        "$set": set_doc,
+                        "$setOnInsert": set_on_insert,
                     },
                     upsert=True,
                 )
@@ -625,23 +648,27 @@ class Database:
             return doc or {}
         else:
             # V2 #18: atomic upsert for the non-language branch as well.
+            # V3 #1: $set/$setOnInsert overlap audited — no shared paths.
             try:
+                set_doc2: dict = {
+                    "series_title": series_title or series_slug,
+                    "channel_id": channel_id,
+                    "invite_link": invite_link,
+                    "auto_created": auto_created,
+                    "created_by": created_by,
+                    "updated_at": now,
+                    **({"poster_url": poster_url} if poster_url else {}),
+                }
+                set_on_insert2: dict = {
+                    "series_slug": series_slug,
+                    "created_at": now,
+                }
+                _sanitize_upsert(set_doc2, set_on_insert2)
                 await self.channel_mappings.update_one(
                     {"series_slug": series_slug},
                     {
-                        "$set": {
-                            "series_title": series_title or series_slug,
-                            "channel_id": channel_id,
-                            "invite_link": invite_link,
-                            "auto_created": auto_created,
-                            "created_by": created_by,
-                            "updated_at": now,
-                            **({"poster_url": poster_url} if poster_url else {}),
-                        },
-                        "$setOnInsert": {
-                            "series_slug": series_slug,
-                            "created_at": now,
-                        },
+                        "$set": set_doc2,
+                        "$setOnInsert": set_on_insert2,
                     },
                     upsert=True,
                 )
@@ -830,18 +857,16 @@ class Database:
         """Record user activity for user count and broadcasting across bot fleet."""
         now = datetime.now(timezone.utc).isoformat()
         try:
+            set_doc = {
+                "username": username or "",
+                "first_name": first_name or "",
+                "last_seen": now,
+            }
+            set_on_insert = {"first_seen": now}
+            _sanitize_upsert(set_doc, set_on_insert)  # V3 #1 audit
             await self.bot_users.update_one(
                 {"user_id": user_id},
-                {
-                    "$set": {
-                        "username": username or "",
-                        "first_name": first_name or "",
-                        "last_seen": now,
-                    },
-                    "$setOnInsert": {
-                        "first_seen": now,
-                    }
-                },
+                {"$set": set_doc, "$setOnInsert": set_on_insert},
                 upsert=True,
             )
         except Exception as e:
@@ -1133,31 +1158,37 @@ class Database:
         """List all configured custom thumbnails."""
         return await self.custom_thumbnails.find().to_list(length=100)
 
-    # ── Post Style Configuration (Default: 'classic') ────────────────
+    # ── Post Style Configuration (V3 #7: modern-only, classic retired) ──
 
     async def get_post_style(self) -> str:
-        """Get poster post style ('classic' or 'modern'). Default is 'modern'."""
-        val = await self.get_config("post_style", default="modern")
-        return str(val) if val else "modern"
+        """V3 #7: modern-only. Always returns 'modern'; legacy 'classic' auto-migrates."""
+        try:
+            val = await self.get_config("post_style", default="modern")
+            if str(val).lower() == "classic":
+                await self.set_config("post_style", "modern")
+        except Exception:
+            pass
+        return "modern"
 
     async def set_post_style(self, style: str):
-        """Set poster post style ('classic' or 'modern')."""
-        clean_style = "modern" if style.strip().lower() == "modern" else "classic"
-        await self.set_config("post_style", clean_style)
+        """V3 #7: classic retired — any value persists as 'modern'."""
+        await self.set_config("post_style", "modern")
 
-    # ── Start Style & Banner Configuration (Default: 'modern') ──────
+    # ── Start Style & Banner Configuration (V3 #7: modern-only) ──────
 
     async def get_start_style(self) -> str:
-        """Get /start UI style ('classic' or 'modern'). Default is 'modern'."""
-        from config import Config
-        def_st = getattr(Config, "START_STYLE", "modern") or "modern"
-        val = await self.get_config("start_style", default=def_st)
-        return str(val) if val else def_st
+        """V3 #7: modern-only. Always returns 'modern'."""
+        try:
+            val = await self.get_config("start_style", default="modern")
+            if str(val).lower() == "classic":
+                await self.set_config("start_style", "modern")
+        except Exception:
+            pass
+        return "modern"
 
     async def set_start_style(self, style: str):
-        """Set /start UI style ('classic' or 'modern')."""
-        clean_style = "modern" if style.strip().lower() == "modern" else "classic"
-        await self.set_config("start_style", clean_style)
+        """V3 #7: classic retired — any value persists as 'modern'."""
+        await self.set_config("start_style", "modern")
 
     async def get_start_pic(self) -> str | None:
         """Get custom image banner for /start UI."""
@@ -1295,29 +1326,50 @@ class Database:
         await self.set_config("ongoing_channel", channel_id)
 
 
-    # ── Episode Post Style Configuration (Default: 'modern') ────────
+    # ── Episode Post Style Configuration (V3 #7: modern-only) ────────
 
     async def get_ep_style(self) -> str:
-        """Get episode upload post style ('classic' or 'modern'). Default is 'modern'."""
-        val = await self.get_config("ep_style", default="modern")
-        return str(val) if val else "modern"
+        """V3 #7: modern-only. Always returns 'modern'."""
+        try:
+            val = await self.get_config("ep_style", default="modern")
+            if str(val).lower() == "classic":
+                await self.set_config("ep_style", "modern")
+        except Exception:
+            pass
+        return "modern"
 
     async def set_ep_style(self, style: str):
-        """Set episode upload post style ('classic' or 'modern')."""
-        clean_style = "modern" if style.strip().lower() == "modern" else "classic"
-        await self.set_config("ep_style", clean_style)
+        """V3 #7: classic retired — any value persists as 'modern'."""
+        await self.set_config("ep_style", "modern")
 
-    # ── Schedule Style Configuration (Default: 'modern') ────────────
+    # ── Schedule Style Configuration (V3 #7: modern-only) ────────────
 
     async def get_sched_style(self) -> str:
-        """Get schedule UI style ('classic' or 'modern'). Default is 'modern'."""
-        val = await self.get_config("sched_style", default="modern")
-        return str(val) if val else "modern"
+        """V3 #7: modern-only. Always returns 'modern'."""
+        try:
+            val = await self.get_config("sched_style", default="modern")
+            if str(val).lower() == "classic":
+                await self.set_config("sched_style", "modern")
+        except Exception:
+            pass
+        return "modern"
 
     async def set_sched_style(self, style: str):
-        """Set schedule UI style ('classic' or 'modern')."""
-        clean_style = "modern" if style.strip().lower() == "modern" else "classic"
-        await self.set_config("sched_style", clean_style)
+        """V3 #7: classic retired — any value persists as 'modern'."""
+        await self.set_config("sched_style", "modern")
+
+    async def migrate_classic_styles_to_modern(self) -> dict:
+        """V3 #7: migrate any stored 'classic' style values to 'modern'."""
+        migrated = []
+        for key in ("post_style", "start_style", "ep_style", "sched_style"):
+            try:
+                val = await self.get_config(key, default="modern")
+                if str(val or "").lower() == "classic":
+                    await self.set_config(key, "modern")
+                    migrated.append(key)
+            except Exception:
+                continue
+        return {"migrated": migrated}
 
     # ── Auto Episode Monitoring (OFF by default) ─────────────────────
 

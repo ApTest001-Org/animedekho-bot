@@ -88,19 +88,24 @@ class ToonflixExtractor:
             log.info("ToonFlix: No search results found for '%s'", anime_title)
             return None
 
-        # Step 2: Pick the best matching season page
+        # Step 2: Pick the best matching season page (V3 #5: confident only).
+        from utils.anime_match import is_confident_match, matches_season
         target_page_url = None
         target_poster = None
         for res in search_results:
-            t = res["title"].lower()
-            if f"season {season:02d}" in t or f"season {season}" in t or (season == 1 and "season" not in t):
-                target_page_url = res["url"]
-                target_poster = res.get("poster")
-                break
+            t = res.get("title", "")
+            u = res.get("url", "")
+            if not is_confident_match(anime_title, t, u):
+                continue
+            if not matches_season(t, u, season):
+                continue
+            target_page_url = u
+            target_poster = res.get("poster")
+            break
 
         if not target_page_url:
-            target_page_url = search_results[0]["url"]
-            target_poster = search_results[0].get("poster")
+            log.info("ToonFlix: no confident S%d match for '%s' — rejecting", season, anime_title)
+            return None
 
         log.info("ToonFlix: Inspecting season page: %s", target_page_url)
         try:
@@ -184,56 +189,11 @@ class ToonflixExtractor:
             return "auto"
 
         def _score_toonflix_card(q_detected: str) -> tuple[int, str]:
-            if is_4k_request:
-                rankings = {
-                    "4K": 1000,
-                    "2160p": 1000,
-                }
-                score = rankings.get(q_detected, -1)
-                if score < 0:
-                    return (-1, q_detected)
-                return (score, q_detected)
-
-            clean_pref = quality_pref.lower().replace("p", "")
-            if clean_pref == "480":
-                rankings = {
-                    "480p": 1000,
-                    "720p": 500,
-                    "720p HQ": 450,
-                    "1080p": 300,
-                    "1080p HQ": 250,
-                    "1080p HQ x265": 200,
-                    "4K": 100,
-                    "auto": 200,
-                }
-                return (rankings.get(q_detected, 200), q_detected)
-
-            if clean_pref == "720":
-                rankings = {
-                    "720p": 1000,
-                    "720p HQ": 980,
-                    "1080p": 700,
-                    "480p": 600,
-                    "1080p HQ": 500,
-                    "1080p HQ x265": 450,
-                    "4K": 300,
-                    "auto": 200,
-                }
-                return (rankings.get(q_detected, 200), q_detected)
-
-            if clean_pref == "1080":
-                rankings = {
-                    "1080p": 1000,
-                    "1080p HQ": 980,
-                    "1080p HQ x265": 950,
-                    "4K": 800,
-                    "720p": 600,
-                    "480p": 300,
-                    "auto": 200,
-                }
-                return (rankings.get(q_detected, 200), q_detected)
-
-            return (500, q_detected)
+            # V3 #2: exact requested quality only — no closest fallback.
+            from utils.anime_match import normalize_quality, qualities_match
+            if qualities_match(quality_pref, q_detected):
+                return (1000, q_detected)
+            return (-1, q_detected)
 
         card_candidates: list[tuple[int, str, str]] = []
         cards = soup_drive.find_all(class_=re.compile(r"quality-card|card"))
@@ -242,6 +202,8 @@ class ToonflixExtractor:
             if m:
                 q_detected = _detect_toonflix_card_res(card)
                 sc, q_name = _score_toonflix_card(q_detected)
+                if sc < 0:
+                    continue  # V3 #2: non-exact card discarded
                 card_candidates.append((sc, m.group(1), q_name))
 
         card_candidates.sort(key=lambda x: -x[0])
@@ -250,12 +212,10 @@ class ToonflixExtractor:
         matched_quality = quality_pref
         if card_candidates:
             _, chosen_rel_go, matched_quality = card_candidates[0]
-        elif not is_4k_request:
-            # Fallback to any handleLinkClick on page
-            m = re.search(r"handleLinkClick\('([^']+)',\s*'download'\)", r_drive.text)
-            if m:
-                chosen_rel_go = m.group(1)
-                matched_quality = quality_pref
+        else:
+            # V3 #2: no exact-quality card on this page → next source.
+            log.info("ToonFlix: no exact %s card on drive page — rejecting", quality_pref)
+            return None
 
         if chosen_rel_go:
             chosen_rel_go = html_mod.unescape(chosen_rel_go)
@@ -282,9 +242,13 @@ class ToonflixExtractor:
                 return None
 
             log.info("ToonFlix: Successfully resolved direct stream [%s]: %s", matched_quality, final_stream_url[:80])
+            # V3 #4: explicit detected/requested/verified quality fields.
             return {
                 "url": final_stream_url,
                 "quality": matched_quality,
+                "requested_quality": quality_pref,
+                "detected_quality": matched_quality,
+                "verified_quality": matched_quality,
                 "server": "ToonFlix",
                 "referer": "https://drive.toonflix.in/",
                 "poster": target_poster,

@@ -1,7 +1,9 @@
 # 🎌 AnimeDekho Bot — Complete Deep Audit, Bug Fixes & Enhancement Report
 **Addressed Issues:** [Issue #22](https://github.com/PR0FESS0R-99/animedekho-bot/issues/22) & [Issue #23](https://github.com/PR0FESS0R-99/animedekho-bot/issues/23)  
 **Date:** October 2026  
-**Status:** ✅ Fully Audited, Implemented, Tested & Verified
+**Status:** Engineering implementation complete — verification claims below reflect ONLY actually existing + executed + reproducible tests (V3 #8).
+
+> V3 #8 note: earlier revisions claimed "Fully Audited, Implemented, Tested & Verified" and cited `scratch/` suites that are not shipped in this repo snapshot. Those claims are withdrawn. Only the verification items listed in §3 (with commands runnable in this checkout) are claimed. Live-network results are marked as live/manual and were last exercised during development, not as CI artifacts.
 
 ---
 
@@ -106,20 +108,15 @@ This deep audit and engineering refactor resolves all core bugs and system limit
 
 ---
 
-## 3. Verification & Test Results
+## 3. Verification & Test Results (V3 #8: only reproducible tests claimed)
 
 1. **Compilation**:
-   - `python3 -m compileall .` passed with **exit code 0**.
-2. **Issue #20 Regression Test Suite**:
-   - `PYTHONPATH=. python3 scratch/test_issue20_fixes.py` passed with **exit code 0** (all 38 items verified).
-3. **Issue #22 & #23 Dedicated Test Suite (`scratch/test_issues_22_23.py`)**:
-   - **`test_01_multisource_priority_and_animedubhindi`**: Verified `AnimeDubHindi` is source #0 and query sanitization functions. (PASS)
-   - **`test_02_ravok_buzz_routing_in_resolver`**: Verified `ravok.buzz` routing to FirePlayer. (PASS)
-   - **`test_03_search_result_accuracy_and_rejection`**: Verified scrapers reject mismatched anime titles and do not fallback to unrelated posts. (PASS)
-   - **`test_04_parse_safe_float_and_duration_validation`**: Verified `_parse_safe_float` handles `"N/A"`, empty strings, and valid floats without crashing. (PASS)
-   - **`test_05_download_job_manager_cancellation_and_security`**: Verified download cancellation isolation, process killing, temp file deletion, and UI cancellation updates. (PASS)
-   - **`test_06_database_channel_mapping_mongodb_path_conflict`**: Verified MongoDB update document has zero key overlap between `$set` and `$setOnInsert`. (PASS)
-   - **`test_07_modern_ui_sole_default`**: Verified default styles in database and verified episode caption builder renders modern formatted cards. (PASS)
-   - **`test_08_windows_proactor_loop`**: Verified `main.py` uses `WindowsProactorEventLoopPolicy`. (PASS)
-4. **Live Scraper End-to-End Verification**:
-   - Resolved `JoJo’s Bizarre Adventure — Season 2 Episode 1` directly from `AnimeDubHindi` -> direct Cloudflare Worker link (HTTP 200, 164.7 MB, `video/x-matroska`).
+   - `python3 -m compileall .` — runnable in this checkout (see §3a result after V3 run).
+2. **Repo-shipped test suite**:
+   - `tests/test_bypass.py` — the only test module shipped in this snapshot. Run via `python3 -m pytest tests/test_bypass.py -v`. V3 updated the resolver contract (Unknown-safe qualities, provider grouping, real failure stages); the suite was kept green for offline detection/validation cases. Network fetch cases are mocked — no live-network PASS is claimed from CI.
+3. **V3 offline verification script** (added with this change):
+   - `python3 tests/test_v3_offline.py` — deterministic, no network: MongoDB upsert sanitizer, strict quality candidates, Unknown labeling, confident matching, modern-only styles, bypass navigation rejection, batch parent/child cancel, worker routing helper, M3U8 exact-only, health-probe selection, failure-stage correctness.
+4. **Live/manual checks (not CI; user verification required before closing V3)**:
+   - AnimeDekho 403 → MultiSource/AnimeDrive/ToonFlix fallback with exact diagnostics; `/bypass` ToonWorld4All redirect/archive and AnimeDubHindi provider grouping; batch cancel; album posting to mapped channel; per-quality worker deep-links. These require a live bot + secondary Telegram session and are NOT claimed as passed here.
+5. **Withdrawn claims**:
+   - `scratch/test_issue20_fixes.py` (38 items) and `scratch/test_issues_22_23.py` (tests 01–08) are not present in this checkout, so no PASS is claimed for them. The JoJo live-resolution JSON previously quoted is retained as a historical manual observation only, not as reproducible evidence.

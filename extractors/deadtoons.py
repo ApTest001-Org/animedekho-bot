@@ -102,22 +102,23 @@ class DeadToonsExtractor:
         if not search_results:
             return None
 
-        # Clean title keywords for matching
-        q_words = [w.lower() for w in re.findall(r"\w+", anime_title) if len(w) > 2]
-
+        # V3 #5: confident title match (no single-keyword guess).
+        from utils.anime_match import is_confident_match, matches_season
         target_post = None
         for res in search_results:
-            t = res["title"].lower()
-            href = res["url"].lower()
-            if q_words and not any(w in t or w in href for w in q_words):
+            t = res.get("title", "")
+            href = res.get("url", "")
+            if not is_confident_match(anime_title, t, href):
                 continue
             if (
-                f"season {season}" in t
-                or f"season {season:02d}" in t
-                or f"s{season}" in t
-                or f"s{season:02d}" in t
-                or (season == 1 and "season" not in t and "s0" not in t and "s1" not in t)
+                f"season {season}" in t.lower()
+                or f"season {season:02d}" in t.lower()
+                or f"s{season}" in t.lower()
+                or f"s{season:02d}" in t.lower()
+                or (season == 1 and "season" not in t.lower() and "s0" not in t.lower() and "s1" not in t.lower())
             ):
+                if not matches_season(t, href, season):
+                    continue
                 target_post = res
                 break
 
@@ -139,7 +140,10 @@ class DeadToonsExtractor:
                 if pattern.search(href) or f"episode/{season}x{episode}" in href.lower():
                     return {
                         "url": href,
-                        "quality": quality_pref,
+                        "quality": "Unknown",
+                            "requested_quality": quality_pref,
+                            "detected_quality": "Unknown",
+                            "verified_quality": "Unknown",
                         "source": "DeadToons",
                         "poster": target_post.get("poster"),
                     }

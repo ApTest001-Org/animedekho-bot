@@ -149,8 +149,10 @@ class ToonAnimeExtractor:
         if not search_results:
             return None
 
-        # V2 #16: fuzzy best-match series (not blindly first result).
-        # Score by shared title tokens + season token presence.
+        # V3 #5: confident match only — rank + require confident overlap
+        # and strict season agreement (no first-result guess).
+        from utils.anime_match import is_confident_match, matches_season
+
         def _score(title: str) -> int:
             q_toks = set(re.sub(r"[^a-z0-9 ]", " ", anime_title.lower()).split())
             t_toks = set(re.sub(r"[^a-z0-9 ]", " ", (title or "").lower()).split())
@@ -163,10 +165,16 @@ class ToonAnimeExtractor:
 
         ranked = sorted(search_results, key=lambda r: _score(r.get("title", "")), reverse=True)
         # Reject clearly wrong anime (no token overlap at all).
-        if _score(ranked[0].get("title", "")) <= 0:
+        best = ranked[0]
+        if _score(best.get("title", "")) <= 0 or not is_confident_match(
+            anime_title, best.get("title", ""), best.get("url", "")
+        ):
             log.info("ToonAnime: no confident series match for '%s' — rejecting", anime_title)
             return None
-        target_series = ranked[0]
+        if not matches_season(best.get("title", ""), best.get("url", ""), season):
+            log.info("ToonAnime: season %d mismatch for '%s' — rejecting", season, anime_title)
+            return None
+        target_series = best
         series_url = target_series["url"]
 
         try:
@@ -225,7 +233,11 @@ class ToonAnimeExtractor:
                         return "360p"
                 return ""
 
-            pref_l = quality_pref.lower()
+            # V3 #2 + V3 #4: exact requested quality only; unknown stays
+            # "Unknown" with explicit requested/detected/verified fields.
+            # Non-exact candidates are discarded (next source, not fallback).
+            from utils.anime_match import normalize_quality, qualities_match
+            pref_norm = normalize_quality(quality_pref)
             scored: list[tuple[int, str, str]] = []
 
             for iframe in soup_ep.find_all("iframe"):
@@ -233,12 +245,14 @@ class ToonAnimeExtractor:
                 if not src or src.startswith("about:") or len(src) < 10:
                     continue
                 parent_txt = (iframe.parent.get_text(" ", strip=True) if iframe.parent else "")[:200]
-                det = _detect_quality(src, parent_txt)
-                score = 10 if det.lower() == pref_l else (5 if det else 0)
+                det = _detect_quality(src, parent_txt) or "Unknown"
+                if not qualities_match(quality_pref, det):
+                    continue
+                score = 10
                 # Prefer http(s) embeds over relative/js stubs
                 if src.startswith("http"):
                     score += 2
-                scored.append((score, src, det or quality_pref))
+                scored.append((score, src, det))
 
             for a in soup_ep.find_all("a", href=True):
                 href = (a["href"] or "").strip()
@@ -248,22 +262,28 @@ class ToonAnimeExtractor:
                 if not any(x in low for x in ("drive.google", "mega.nz", "mediafire", "streamwish", "hubcloud", ".mp4", ".mkv", ".m3u8")):
                     continue
                 label = a.get_text(" ", strip=True)[:200]
-                det = _detect_quality(href, label)
-                score = 10 if det.lower() == pref_l else (5 if det else 1)
+                det = _detect_quality(href, label) or "Unknown"
+                if not qualities_match(quality_pref, det):
+                    continue
+                score = 10
                 # Direct files outrank generic embeds on ties
                 if any(x in low for x in (".mp4", ".mkv", ".m3u8", "drive.google")):
                     score += 1
-                scored.append((score, href, det or quality_pref))
+                scored.append((score, href, det))
 
             if not scored:
+                log.info("ToonAnime: no exact %s link for '%s' S%dE%d — rejecting (V3 #2)", quality_pref, anime_title, season, episode)
                 return None
             scored.sort(key=lambda t: t[0], reverse=True)
             best_score, best_url, best_q = scored[0]
-            log.info("ToonAnime: %d candidate(s), picked %s [%s] score=%d for '%s' S%dE%d",
+            log.info("ToonAnime: %d exact candidate(s), picked %s [%s] score=%d for '%s' S%dE%d",
                      len(scored), best_url[:80], best_q, best_score, anime_title, season, episode)
             return {
                 "url": best_url,
                 "quality": best_q,
+                "requested_quality": quality_pref,
+                "detected_quality": best_q,
+                "verified_quality": best_q,
                 "source": "ToonAnime",
                 "poster": target_series.get("poster"),
             }

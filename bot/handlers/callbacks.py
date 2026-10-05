@@ -951,7 +951,8 @@ async def _handle_batch_picker(q: CallbackQuery, slug: str, season: int):
 
 
 async def _handle_batch_download(client: Client, q: CallbackQuery, slug: str, season: int, quality_pref: str):
-    """Execute batch download for an entire season."""
+    """Execute batch download for an entire season (V3 #6 batch lifecycle)."""
+    from bot.telegram.types import InlineKeyboardButton, InlineKeyboardMarkup
     chat_id = q.message.chat.id
     user = q.from_user
 
@@ -970,21 +971,30 @@ async def _handle_batch_download(client: Client, q: CallbackQuery, slug: str, se
             series.title, season, total
         )
 
+    # V3 #6: parent Batch Job + persistent cancel control. One cancel stops
+    # this exact batch (episode children included), never other users' jobs.
+    batch_id = download_job_manager.create_batch_job(
+        user.id, f"{series.title} S{season} [{quality_pref}]", total)
+    cancel_markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🛑 Cancel Download", callback_data=f"cendl:{batch_id}")]])
     progress_msg = await q.message.reply_text(
         f"📦 <b>Batch Download Starting</b>\n"
         f"📺 {esc(series.title)} — Season {season}\n"
         f"📂 {total} episodes · Quality: {quality_pref}\n\n"
         f"⏳ Resolving episodes...",
         parse_mode=enums.ParseMode.HTML,
+        reply_markup=cancel_markup,
     )
+    download_job_manager.get_job(batch_id).progress_msg = progress_msg
 
     # Run batch in background
-    asyncio.create_task(
+    task = asyncio.create_task(
         _do_batch_download(
             client, chat_id, series, season, s.episodes,
-            quality_pref, progress_msg, user
+            quality_pref, progress_msg, user, batch_id, cancel_markup,
         )
     )
+    download_job_manager.attach_task(batch_id, task)
 
 
 async def _resolve_destination_channel(series_slug: str, series_title: str = "", poster_url: str = "", language: str = "") -> int | None:
@@ -1022,24 +1032,39 @@ async def _resolve_destination_channel(series_slug: str, series_title: str = "",
     return None
 
 
-async def _do_batch_download(client: Client, chat_id, series, season, episodes, quality_pref, progress_msg, user):
-    """Execute batch download sequentially with multi-server fallback."""
+async def _do_batch_download(client: Client, chat_id, series, season, episodes, quality_pref, progress_msg, user,
+                       batch_id: str | None = None, cancel_markup=None):
+    """Execute batch download sequentially with multi-server fallback.
+
+    V3 #6: persistent cancel button on every progress edit; per-episode
+    child jobs linked to the parent batch; batch cancel stops the exact
+    batch immediately.
+    """
     total = len(episodes)
     completed = 0
     skipped = 0  # Episodes served from cache
     sent_messages = [progress_msg]  # Track all messages for auto-delete
+    cancelled = False
 
     # Check or auto-create dedicated series channel if userbot/mapping enabled
     dest_channel_id = await _resolve_destination_channel(series.slug, series.title, series.poster or "")
 
+    def _batch_cancelled() -> bool:
+        return bool(batch_id) and download_job_manager.batch_is_cancelled(batch_id)
+
     for i, ep in enumerate(episodes, 1):
+        if _batch_cancelled():
+            cancelled = True
+            break
         try:
             cache_info = f"\n⚡ {skipped} from library" if skipped > 0 else ""
+            # V3 #6: every progress edit keeps the persistent cancel button.
             await progress_msg.edit_text(
-                f"📦 <b>Batch Download</b> — {esc(series.title)} S{season}\n\n"
-                f"📥 Processing S{season}E{ep.number}... ({i}/{total})\n"
+                f"📦 <b>Batch Downloading...</b> — {esc(series.title)} S{season}\n\n"
+                f"📥 Episode {ep.number:02d} → Downloading ({i}/{total})\n"
                 f"✅ {completed} completed{cache_info}",
                 parse_mode=enums.ParseMode.HTML,
+                reply_markup=cancel_markup,
             )
         except Exception:
             pass
@@ -1047,6 +1072,7 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
         try:
             # ── Check cache first — skip already downloaded episodes ──
             ep_key = f"S{season}E{ep.number:02d}"
+            ep_job_id: str | None = None
             from bot.database import db
             if db:
                 cached_fid = await db.get_cached_file(series.slug, quality_pref, ep_key)
@@ -1074,7 +1100,7 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
             sent_msg = None
             chosen_q = Quality(resolution=quality_pref, url="")
 
-            # Create a per-episode progress message
+            # Create a per-episode progress message + child job (V3 #6).
             ep_quality_label = f"4K Tier" if is_4k else quality_pref
             ep_msg = await client.send_message(
                 chat_id,
@@ -1082,6 +1108,12 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                 parse_mode=enums.ParseMode.HTML,
             )
             sent_messages.append(ep_msg)
+            ep_job_id = download_job_manager.create_episode_job(
+                batch_id, user.id, f"{series.title} S{season}E{ep.number} [{quality_pref}]", ep_msg)
+            if _batch_cancelled():
+                download_job_manager.remove_job(ep_job_id)
+                cancelled = True
+                break
 
             if is_4k:
                 # 4K Batch: AnimeDrive is default for 4K and enhanced 1080p HQ tiers
@@ -1335,11 +1367,40 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                 await bot.logger.bot_logger.log_download_error(
                     f"{series.title} S{season}E{ep.number}", str(e)
                 )
+        finally:
+            try:
+                if ep_job_id:
+                    download_job_manager.remove_job(ep_job_id)
+            except Exception:
+                pass
 
+        if _batch_cancelled():
+            cancelled = True
+            break
         # Small delay between episodes to avoid rate limits
         await asyncio.sleep(2)
 
-    # Final summary
+    # Final summary (V3 #6: terminal states carry NO cancel button).
+    if cancelled or _batch_cancelled():
+        try:
+            await progress_msg.edit_text(
+                f"🛑 <b>Batch Cancelled</b>\n"
+                f"┌ 📺 {esc(series.title)} — Season {season}\n"
+                f"├ ✅ {completed}/{total} delivered before cancel\n"
+                f"└ 🗑️ This message will auto-delete in 12h",
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception:
+            pass
+        if batch_id:
+            download_job_manager.remove_job(batch_id)
+        if bot.logger.bot_logger:
+            try:
+                await bot.logger.bot_logger.log_batch_complete(f"{series.title} (CANCELLED)", season, completed, total)
+            except Exception:
+                pass
+        asyncio.create_task(_auto_delete_messages(client, chat_id, sent_messages, 43200))
+        return
     cache_info = f"\n⚡ {skipped} served from library (instant)" if skipped > 0 else ""
     downloaded = completed - skipped
     try:
@@ -1354,6 +1415,8 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
         )
     except Exception:
         pass
+    if batch_id:
+        download_job_manager.remove_job(batch_id)
 
     if bot.logger.bot_logger:
         await bot.logger.bot_logger.log_batch_complete(series.title, season, completed, total)
@@ -1599,8 +1662,9 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                 await bot.logger.bot_logger.log_download_error(title, "Download/upload failed on all servers")
             try:
                 attempted_txt = ", ".join(dict.fromkeys(attempted_sources)) if attempted_sources else "all available servers"
-                # V2 #14: report source, quality, resolved-link count and stage —
-                # not just a generic failure.
+                # V3 #9 + V3 #10: full provider/source diagnostics — never a
+                # bare failure. Includes requested quality, resolver +
+                # fallback stages, and the exact failure reason (403 etc).
                 req_q = getattr(chosen_quality, "resolution", "?")
                 n_cands = len(candidates) if "candidates" in dir() else 0
                 try:
@@ -1610,14 +1674,20 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                 except Exception:
                     last_stage = ""
                 detail = f"├ 🎬 Requested: {esc(str(req_q))} · Candidates: {n_cands}\n"
+                detail += f"├ 📡 Provider/Source: {esc(attempted_txt)}\n"
                 if last_stage:
-                    detail += f"├ 🧩 Last stage: {esc(last_stage)}\n"
+                    detail += f"├ 🧩 Resolver stage: {esc(last_stage)}\n"
+                detail += f"├ 🔁 Fallback stage: AnimeDekho → MultiSource → AnimeDrive → ToonFlix\n"
+                is_403 = "403" in last_stage or "forbidden" in last_stage.lower()
+                if is_403:
+                    detail += f"├ ⚠️ Failure reason: AnimeDekho 403 Forbidden — direct sources tried first, all fallbacks exhausted\n"
+                else:
+                    detail += f"├ ⚠️ Failure reason: exact {esc(str(req_q))} stream unavailable on attempted sources\n"
                 await progress_msg.edit_text(
                     f"❌ <b>Download Failed</b>\n"
                     f"┌ 📺 {esc(title)}\n"
-                    f"├ 🔍 Attempted: {esc(attempted_txt)}\n"
                     f"{detail}"
-                    f"└ 💔 Stream unavailable on attempted sources. Try another quality/episode or /bypass the source URL.",
+                    f"└ 💔 Try another quality/episode or /bypass the source URL.",
                     parse_mode=enums.ParseMode.HTML,
                 )
             except Exception:
@@ -1784,7 +1854,13 @@ def _pick_quality(srv, quality_idx: int):
 
 
 def _find_quality_candidates(servers: list, quality_pref: str) -> list[tuple[VideoServer, Quality]]:
-    """Find all matching (server, quality) pairs across resolved servers in priority order."""
+    """V3 #2: strict exact-quality only (no closest/auto fallback).
+
+    Requested quality must match exactly (case-insensitive; 4K≡2160p≡UHD).
+    ``auto`` keeps its legacy first-available behaviour. Anything else with
+    no exact match returns [] so the caller tries the next source or fails
+    instead of silently delivering 720p for a 1080p request.
+    """
     from config.settings import settings
     preferred = settings.site.preferred_servers
 
@@ -1806,63 +1882,21 @@ def _find_quality_candidates(servers: list, quality_pref: str) -> list[tuple[Vid
                 candidates.append((srv, Quality(resolution="auto", url=srv.direct_url)))
         return candidates
 
-    is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
+    def _norm(q: str) -> str:
+        s = (q or "").strip().lower()
+        if s in ("4k", "2160p", "2160", "uhd"):
+            return "4k"
+        return s
 
-    if is_4k:
-        # V2 #19: 4K requests must ONLY return true 4K/2160/UHD streams.
-        # Never fall back to 1080p/720p here — return [] so the caller
-        # triggers AnimeDrive/ToonFlix/MultiSource 4K fallback instead.
-        def _is_true_4k(res: str) -> bool:
-            r = res.lower()
-            return any(k in r for k in ("4k", "2160", "uhd"))
+    want = _norm(quality_pref)
 
-        true_4k_pairs = []
-        for srv in sorted_servers:
-            for q in srv.qualities:
-                if _is_true_4k(q.resolution):
-                    true_4k_pairs.append((1000, _server_priority(srv), srv, q))
-            if not srv.qualities and srv.direct_url and _is_true_4k(srv.direct_url):
-                true_4k_pairs.append((1000, _server_priority(srv), srv, Quality(resolution="4K", url=srv.direct_url)))
-
-        # Sort by server priority only (all are true 4K)
-        true_4k_pairs.sort(key=lambda x: x[1])
-        return [(srv, q) for _, _, srv, q in true_4k_pairs]
-
-    # Pass 1: exact matches
     for srv in sorted_servers:
         for q in srv.qualities:
-            if q.resolution.lower() == quality_pref.lower():
+            if _norm(q.resolution) == want:
                 candidates.append((srv, q))
                 break
-
-    # Pass 2: closest numeric matches if no exact
-    if not candidates:
-        clean_pref = quality_pref.lower().replace("p", "")
-        pref_height = int(clean_pref) if clean_pref.isdigit() else 0
-        if pref_height:
-            best_diff = float("inf")
-            for srv in sorted_servers:
-                for q in srv.qualities:
-                    try:
-                        h = int(q.resolution.lower().replace("p", ""))
-                        diff = abs(h - pref_height)
-                        if diff < best_diff:
-                            best_diff = diff
-                            candidates = [(srv, q)]
-                        elif diff == best_diff and not any(s.name == srv.name for s, _ in candidates):
-                            candidates.append((srv, q))
-                    except ValueError:
-                        continue
-
-    # Pass 3: any "auto" / direct URL fallback
-    if not candidates:
-        for srv in sorted_servers:
-            for q in srv.qualities:
-                if q.resolution == "auto":
-                    candidates.append((srv, q))
-                    break
-            if not candidates and srv.direct_url:
-                candidates.append((srv, Quality(resolution="auto", url=srv.direct_url)))
+        if not srv.qualities and srv.direct_url and want == "auto":
+            candidates.append((srv, Quality(resolution="auto", url=srv.direct_url)))
 
     return candidates
 

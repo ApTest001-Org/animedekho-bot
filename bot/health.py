@@ -17,7 +17,19 @@ from bot.telegram import Client, enums
 from bot.telegram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config.settings import settings
-from bot.database import db
+
+
+def _get_db():
+    """V3 #13: dynamic db access — never cache the module-level reference.
+
+    ``bot.database.db`` is assigned at startup; a stale ``from bot.database
+    import db`` binding stays None forever. Always resolve via module attr.
+    """
+    try:
+        import bot.database as _dbmod
+        return _dbmod.db
+    except Exception:
+        return None
 
 log = logging.getLogger(__name__)
 
@@ -228,6 +240,7 @@ async def get_database_health() -> dict[str, Any]:
         "errors_24h": 0,
         "error": None,
     }
+    db = _get_db()  # V3 #13: dynamic access, no stale None
     if not db:
         res["error"] = "Database instance is None"
         return res
@@ -304,8 +317,9 @@ async def format_health_dashboard(main_client: Client) -> tuple[str, InlineKeybo
 
     # Fetch last 3 errors for quick glance
     recent_errors = []
-    if db:
-        recent_errors = await db.get_recent_download_errors(limit=3)
+    _dbg = _get_db()  # V3 #13: dynamic access
+    if _dbg:
+        recent_errors = await _dbg.get_recent_download_errors(limit=3)
 
     recent_err_text = ""
     if recent_errors:
