@@ -327,6 +327,7 @@ async def _resolve_animedubhindi_page(
 async def _resolve_toonworld_url(
     page_url: str, html: str, quality_pref: str,
     detect_and_bypass, is_shortener, is_valid_media_destination,
+    season: int | None = None, episode: int | None = None,
 ) -> tuple[list[dict], list[str], str]:
     """V3 #11: real redirect resolve → final page refetch → validation.
 
@@ -353,7 +354,8 @@ async def _resolve_toonworld_url(
             return None
 
     def _ep_priority(href: str, label: str) -> int:
-        if episode is not None and re.search(rf"{season}x0*{episode}\b", f"{href} {label}", re.I):
+        if season is not None and episode is not None \
+                and re.search(rf"{season}x0*{episode}\b", f"{href} {label}", re.I):
             return 0
         if "/zip/" in href.lower():
             return 2  # batch archives last; skipped below unless nothing else
@@ -621,6 +623,7 @@ async def resolve_bypass_url(url: str, quality_pref: str = "1080p") -> dict:
             media_links, archive_urls, note = await _resolve_toonworld_url(
                 result["final_url"], html, quality_pref,
                 detect_and_bypass, is_shortener, is_valid_media_destination,
+                season, episode,
             )
             result["fallback_stage"] = note
         else:
