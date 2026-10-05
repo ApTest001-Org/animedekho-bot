@@ -174,6 +174,20 @@ def main() -> int:
     ok &= check("V3#8 no absolute verified claim", "Fully Audited, Implemented, Tested & Verified" not in rep.split("V3 #8 note")[0] or "withdrawn" in rep.lower())
     ok &= check("V3#8 scratch PASS withdrawn", "Withdrawn claims" in rep or "not present in this checkout" in rep)
 
+    # ── Download-fix: concurrency + cooldown + refresh plumbing ──
+    from extractors.health_probe import note_host_throttled, _cooldown_active, _HOST_COOLDOWN_UNTIL
+    import time as _t
+    note_host_throttled("https://example-host.invalid/x.mp4")
+    ok &= check("dlfix 429 cooldown engages", _cooldown_active("example-host.invalid"))
+    _HOST_COOLDOWN_UNTIL.pop("example-host.invalid", None)
+    ok &= check("dlfix cooldown clears", not _cooldown_active("example-host.invalid"))
+    ms_src = pathlib.Path("extractors/multisource.py").read_text()
+    ok &= check("dlfix concurrent resolution", "_resolve_one_source" in ms_src and "Semaphore(3)" in ms_src)
+    dl_src = pathlib.Path("bot/downloader.py").read_text()
+    ok &= check("dlfix preflight+refresh params", "refresh_url=None" in dl_src and "Preflight" in dl_src)
+    cb_src = pathlib.Path("bot/handlers/callbacks.py").read_text()
+    ok &= check("dlfix refresh closures wired", cb_src.count("refresh_url=_") >= 9)
+
     print("\nALL PASS" if ok else "\nSOME FAILURES")
     return 0 if ok else 1
 
